@@ -1,0 +1,278 @@
+version: 0.2
+
+# NorthStar Retail — AWS CodeBuild Build Specification
+# CS 401R Lab 4 Starter Kit
+#
+# This buildspec runs the CI pipeline for the northstar-ai-platform repository.
+# Triggered by: CodePipeline on push to main branch
+#
+# Stages:
+#   install   → Set up Python, install dependencies
+#   pre_build → Run unit and integration tests; fail fast if tests fail
+#   build     → Package model code, run data validation, trigger SageMaker pipeline
+#   post_build → Publish metrics to CloudWatch; notify on failure
+#
+# Required CodeBuild environment variables (set in the CodePipeline stack):
+#   PROJECT             northstar
+#   ENVIRONMENT         dev
+#   AWS_REGION          us-east-1
+#   PIPELINE_NAME       SageMaker Pipeline name
+#   SLACK_WEBHOOK_URL   (optional) Slack webhook for build notifications
+#
+# NOTE ON BUCKETS - this changed from an earlier draft.
+# Labs 1 and 2 build ONE bucket with four prefixes:
+#     northstar-dev-data-<account-id>/{raw,processed,features,artifacts}/
+# An earlier version of this file expected three separate buckets pulled from
+# SSM Parameter Store. Those parameters are not created by anything in this
+# course, so the build failed at environment resolution before running a single
+# test. The bucket name is now derived the same way every other component
+# derives it: project + environment + account id.
+
+env:
+  variables:
+    PROJECT: "northstar"
+    ENVIRONMENT: "dev"
+    PIPELINE_NAME: "northstar-churn-pipeline"
+    PYTHON_VERSION: "3.11"
+    # Model quality gates. These MUST match the thresholds in
+    # Lab_3--Model Development.md and churn_training_skeleton.py.
+    MIN_AUC_ROC: "0.72"
+    MIN_PRECISION_TOP10: "0.50"
+    MIN_RECALL_TOP10: "0.25"
+    # The most important gate in the course: the model must beat a
+    # recency-only baseline. A churn model that cannot outperform
+    # "days since last purchase" has not earned its deployment.
+    MIN_AUC_LIFT_OVER_BASELINE: "0.03"
+
+phases:
+
+  install:
+    runtime-versions:
+      python: "3.11"
+    commands:
+      - echo "=== INSTALL PHASE ==="
+      - echo "Build started at $(date)"
+      - echo "Commit SHA $CODEBUILD_RESOLVED_SOURCE_VERSION"
+      - pip install --upgrade pip
+      - pip install -r requirements.txt
+      - if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+      - aws sts get-caller-identity
+      # Derive the single data bucket. Everything downstream uses prefixes on it.
+      - export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - export DATA_BUCKET="${PROJECT}-${ENVIRONMENT}-data-${ACCOUNT_ID}"
+      - echo "Data bucket ${DATA_BUCKET}"
+
+  pre_build:
+    commands:
+      - echo "PRE-BUILD PHASE - Tests"
+
+      # Stage pipeline output locally so the data tests have something to
+      # validate. Without this the tests fail immediately - which is correct
+      # behaviour: a CI run that cannot see the data must not report success.
+      - export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - export DATA_BUCKET="${PROJECT}-${ENVIRONMENT}-data-${ACCOUNT_ID}"
+      - mkdir -p data/processed data/features
+      - aws s3 cp "s3://${DATA_BUCKET}/raw/customers/northstar-raw-sample.csv" data/northstar-raw-sample.csv
+      - aws s3 cp "s3://${DATA_BUCKET}/processed/customers/" data/processed/ --recursive --exclude "*_glue_temp*"
+      - aws s3 cp "s3://${DATA_BUCKET}/features/customers/"  data/features/  --recursive
+      - export NORTHSTAR_RAW=./data/northstar-raw-sample.csv
+      - export NORTHSTAR_PROCESSED=./data/processed
+      - export NORTHSTAR_FEATURES=./data/features
+
+      # ── Data Validation Tests ──────────────────────────────────────────
+      - echo "Running data validation tests..."
+      - python -m pytest tests/test_data.py -v --tb=short --junitxml=reports/data_tests.xml
+      # TODO: Add --cov=data/ --cov-report=xml:reports/data_coverage.xml
+
+      # ── Feature Engineering Tests ──────────────────────────────────────
+      - echo "Running feature engineering tests..."
+      - python -m pytest tests/test_features.py -v --tb=short --junitxml=reports/feature_tests.xml
+
+      # ── Model Tests ────────────────────────────────────────────────────
+      - echo "Running model evaluation tests..."
+      - python -m pytest tests/test_model.py -v --tb=short --junitxml=reports/model_tests.xml
+
+      # ── Security Scan ──────────────────────────────────────────────────
+      # TODO: Uncomment after Lab 5 (security hardening)
+      # - bandit -r . -ll --exclude ./tests -f json -o reports/security_scan.json
+      # - cat reports/security_scan.json | python -c "
+      #     import json, sys
+      #     report = json.load(sys.stdin)
+      #     highs = [r for r in report['results'] if r['issue_severity'] == 'HIGH']
+      #     if highs:
+      #         print(f'SECURITY: {len(highs)} HIGH severity issues found')
+      #         sys.exit(1)
+      #   "
+
+      - echo "All pre-build tests passed ✓"
+
+  build:
+    commands:
+      - echo "BUILD PHASE - Package and Deploy"
+
+      # ── Package training code ──────────────────────────────────────────
+      - echo "Packaging training code..."
+      - mkdir -p dist/
+      - zip -r dist/training_code_${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}.zip \
+            models/ \
+            data/ \
+            requirements.txt \
+            --exclude "*.pyc" --exclude "*/__pycache__/*"
+
+      # Upload package to S3
+      - |
+        aws s3 cp \
+          dist/training_code_${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}.zip \
+          s3://${DATA_BUCKET}/artifacts/code/${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}/training_code.zip
+
+      # ── Trigger SageMaker Pipeline ─────────────────────────────────────
+      - echo "Starting SageMaker Pipeline execution..."
+      - |
+        EXECUTION_ARN=$(aws sagemaker start-pipeline-execution \
+          --pipeline-name ${PIPELINE_NAME} \
+          --pipeline-execution-display-name "codebuild-${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}" \
+          --pipeline-parameters \
+            "[
+              {\"Name\": \"TrainingCodeS3Uri\",
+               \"Value\": \"s3://${DATA_BUCKET}/artifacts/code/${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}/training_code.zip\"},
+              {\"Name\": \"CommitSha\",
+               \"Value\": \"${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}\"}
+            ]" \
+          --query "PipelineExecutionArn" \
+          --output text)
+        echo "Pipeline execution started: $EXECUTION_ARN"
+        echo $EXECUTION_ARN > /tmp/pipeline_execution_arn.txt
+
+      # ── Poll pipeline status (up to 45 minutes) ────────────────────────
+      - |
+        EXECUTION_ARN=$(cat /tmp/pipeline_execution_arn.txt)
+        echo "Waiting for pipeline completion..."
+        MAX_WAIT=2700  # 45 minutes
+        ELAPSED=0
+        SLEEP_INTERVAL=30
+
+        while true; do
+          STATUS=$(aws sagemaker describe-pipeline-execution \
+            --pipeline-execution-arn $EXECUTION_ARN \
+            --query "PipelineExecutionStatus" \
+            --output text)
+
+          echo "  [${ELAPSED}s] Pipeline status: $STATUS"
+
+          if [ "$STATUS" = "Succeeded" ]; then
+            echo "✓ Pipeline succeeded"
+            break
+          elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Stopped" ]; then
+            echo "✗ Pipeline $STATUS — check SageMaker Studio for details"
+            exit 1
+          fi
+
+          ELAPSED=$((ELAPSED + SLEEP_INTERVAL))
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "✗ Pipeline timed out after ${MAX_WAIT}s"
+            exit 1
+          fi
+
+          sleep $SLEEP_INTERVAL
+        done
+
+      # ── Retrieve and validate model metrics ───────────────────────────
+      - echo "Retrieving evaluation metrics..."
+      - |
+        aws s3 cp \
+          s3://${DATA_BUCKET}/artifacts/evaluations/latest/evaluation_metrics.json \
+          /tmp/eval_metrics.json || echo "{}" > /tmp/eval_metrics.json
+
+      - |
+        python3 << 'EOF'
+        import json, sys, os
+
+        with open("/tmp/eval_metrics.json") as f:
+            metrics = json.load(f)
+
+        gates = {
+            "auc_roc":          float(os.environ.get("MIN_AUC_ROC", "0.72")),
+            "precision_top10":  float(os.environ.get("MIN_PRECISION_TOP10", "0.50")),
+            "recall_top10":     float(os.environ.get("MIN_RECALL_TOP10", "0.25")),
+        }
+        min_lift = float(os.environ.get("MIN_AUC_LIFT_OVER_BASELINE", "0.03"))
+
+        failures = []
+        for name, threshold in gates.items():
+            value = metrics.get(name)
+            if value is None:
+                failures.append(f"{name} missing from evaluation_metrics.json")
+                print(f"{name:18s} MISSING   (min: {threshold})")
+                continue
+            ok = value >= threshold
+            print(f"{name:18s} {value:.4f}   (min: {threshold})  {'PASS' if ok else 'FAIL'}")
+            if not ok:
+                failures.append(f"{name}={value:.4f} < {threshold}")
+
+        # Baseline lift. The training script must emit baseline_auc_roc from a
+        # model trained on days_since_last_purchase alone.
+        auc = metrics.get("auc_roc")
+        baseline = metrics.get("baseline_auc_roc")
+        if auc is None or baseline is None:
+            failures.append("baseline_auc_roc missing - train the recency-only baseline and record it")
+            print("auc lift           MISSING   (min: %.2f)" % min_lift)
+        else:
+            lift = auc - baseline
+            ok = lift >= min_lift
+            print(f"auc lift           {lift:+.4f}   (min: {min_lift})  {'PASS' if ok else 'FAIL'}")
+            print(f"  full={auc:.4f}  recency-only baseline={baseline:.4f}")
+            if not ok:
+                failures.append(f"auc lift {lift:+.4f} < {min_lift}")
+
+        if failures:
+            print("\nModel quality gate FAILED:")
+            for f_ in failures:
+                print(f"  - {f_}")
+            print("Model will NOT be promoted to the registry.")
+            sys.exit(1)
+
+        print("\nModel quality gate PASSED")
+        EOF
+
+  post_build:
+    commands:
+      - echo "=== POST-BUILD PHASE ==="
+      - echo "Build completed at $(date)"
+      - echo "Build status $CODEBUILD_BUILD_SUCCEEDING"
+
+      # ── Publish build metrics to CloudWatch ───────────────────────────
+      # TODO: Implement this section to publish build duration and pass/fail
+      # to the NorthStar/CI CloudWatch namespace for the Lab 6 dashboard.
+      # - python3 scripts/publish_build_metrics.py \
+      #     --status $CODEBUILD_BUILD_SUCCEEDING \
+      #     --commit $CODEBUILD_RESOLVED_SOURCE_VERSION
+
+      # ── Slack notification (optional) ────────────────────────────────
+      - |
+        if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+          if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
+            MSG="✅ NorthStar CI passed — commit ${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}"
+          else
+            MSG="🚨 NorthStar CI FAILED — commit ${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}"
+          fi
+          curl -s -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$MSG\"}" \
+            $SLACK_WEBHOOK_URL || true
+        fi
+
+reports:
+  northstar-test-reports:
+    files:
+      - "reports/*.xml"
+    file-format: "JUNITXML"
+
+artifacts:
+  files:
+    - "dist/**/*"
+    - "reports/**/*"
+    - "/tmp/eval_metrics.json"
+  name: "northstar-build-$(date +%Y%m%d)-$CODEBUILD_RESOLVED_SOURCE_VERSION"
+
+cache:
+  paths:
+    - "/root/.cache/pip/**/*"
