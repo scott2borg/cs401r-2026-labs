@@ -58,7 +58,7 @@ Create all four prefixes now. They will be used starting in Lab 2.
 **Role — `northstar-dev-MLEngineer`**
 - Trust: `sagemaker.amazonaws.com`
 - Allowed:
-  - SageMaker: training jobs, endpoints, experiments, model registry
+  - SageMaker: training jobs, endpoints, MLflow App (experiment tracking), model registry
   - S3: read/write `artifacts/` and `features/` prefixes
   - CloudWatch Logs: write
   - ECR: read (pull training container images)

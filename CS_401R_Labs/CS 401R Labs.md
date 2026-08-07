@@ -216,7 +216,7 @@ Create all four prefixes now. They will be used starting in Lab 2.
 **Role — `northstar-dev-MLEngineer`**
 - Trust: `sagemaker.amazonaws.com`
 - Allowed:
-  - SageMaker: training jobs, endpoints, experiments, model registry
+  - SageMaker: training jobs, endpoints, MLflow App (experiment tracking), model registry
   - S3: read/write `artifacts/` and `features/` prefixes
   - CloudWatch Logs: write
   - ECR: read (pull training container images)
@@ -368,8 +368,8 @@ Draw the diagram **before** touching the console. Use it as your build plan.
         "sagemaker:CreateTrainingJob", "sagemaker:DescribeTrainingJob", "sagemaker:StopTrainingJob",
         "sagemaker:CreateEndpoint", "sagemaker:DescribeEndpoint", "sagemaker:DeleteEndpoint",
         "sagemaker:CreateEndpointConfig", "sagemaker:DeleteEndpointConfig",
-        "sagemaker:CreateExperiment", "sagemaker:DescribeExperiment",
-        "sagemaker:CreateTrial", "sagemaker:DescribeTrial",
+        "sagemaker:CreateMlflowApp", "sagemaker:DescribeMlflowApp", "sagemaker:ListMlflowApps",
+        "sagemaker:CreatePresignedMlflowAppUrl",
         "sagemaker:RegisterModel", "sagemaker:DescribeModelPackage", "sagemaker:ListModelPackages"
       ],
       "Resource": "*"
@@ -1367,17 +1367,11 @@ Commit `docs/lab2-destroy-output.txt`. Lab 3 begins by re-running `terraform app
 **Assigned:** Thu Oct 1 | **Due:** Sat Oct 17, midnight
 **Chapters:** *Model Development* (Sessions 1–3: Fine-Tuning, RAG, Agents)
 **Builds on:** Lab 2 — models train on the Feature Store features and `churn_label` you produced
-**Primary tools:** SageMaker (training, Experiments, Model Registry), Bedrock
+**Primary tools:** SageMaker (training, MLflow App, Model Registry), Bedrock
 **Prerequisite:** *Pre-Lab 3 — Bedrock Model Access Setup*, due Wed Sep 30 — Tracks B and C cannot start without it.
 **Prerequisite (only if training on SageMaker):** *Pre-Lab 4 — SageMaker Training Quota Setup*, due Wed Sep 30. Your on-demand training quota is **0** by default, so `CreateTrainingJob` fails until an increase is approved. Train locally instead and every Track A rubric item is still reachable.
 
-> **If you have not completed the Bedrock setup exercise, do it now.** On a new AWS account every
-> Bedrock inference quota is **zero**, and access requires a one-time Anthropic use-case form plus
-> per-model quota increases that AWS reviews on its own schedule. This is not something you can
-> resolve the night before the deadline.
->
-> Track A (35 points) requires no Bedrock and can proceed regardless. Track B and Track C cannot
-> start without it. Sequence your work accordingly.
+> **If you have not completed the Bedrock setup exercise, do it now.** On a new AWS account, every Bedrock inference quota is **zero**, and access requires a one-time Anthropic use-case form plus per-model quota increases that AWS reviews on its own schedule. This is not something you can resolve the night before the deadline. Track A (35 points) requires no Bedrock and can proceed regardless. Track B and Track C cannot start without it. Sequence your work accordingly.
 
 ## Objective
 
@@ -1465,9 +1459,56 @@ Train a churn model on the Lab 2 Feature Store data.
 - Training data comes from the **Feature Store offline store** via Athena — not a CSV export and not the `features/customers/` Parquet directly. The point is to use the feature platform you built.
 - Model: XGBoost via the `sagemaker.xgboost` estimator.
 - Hyperparameters (`max_depth`, `eta`, `num_round`, `scale_pos_weight`) passed as arguments, never hardcoded.
-- Every training run tracked as a trial in **SageMaker Experiments**.
+- Every training run tracked as a run in a **SageMaker MLflow App** — see *Experiment tracking* below.
 - Final model registered in the **Model Registry** with status `PendingManualApproval`. Never auto-approve.
 - Class imbalance handled explicitly — roughly 22% positives. Justify your `scale_pos_weight`. (Reference run derives 3.545 from the training split rather than hardcoding it.)
+
+### Experiment tracking — use an MLflow App, and read the warning first
+
+> ## ⚠ There are two MLflow products on SageMaker. One of them will destroy your budget.
+>
+> | | **MLflow App** ✅ | MLflow **Tracking Server** ❌ |
+> |---|---|---|
+> | API | `CreateMlflowApp` | `CreateMlflowTrackingServer` |
+> | Cost | **no additional charge** | **$0.60/hr**, billed until deleted |
+> | Left running one weekend | $0 | **~$43** |
+>
+> The course budget alarm for **all seven labs** is **$10/month**. A single forgotten tracking server breaches it in **16.7 hours** and costs four times the entire course budget in a weekend. It is not an endpoint, so `teardown-lab5.sh` will not catch it, and nothing about it looks expensive in the console.
+>
+> **Most search results and tutorials describe the Tracking Server**, because it shipped first. If you find yourself sizing an instance or picking `Small`/`Medium`, stop — you are on the wrong one. The App is serverless, scales to zero, and has no size to choose.
+
+Create the App once. It takes about five minutes and you keep it for the whole course.
+
+```bash
+aws sagemaker create-mlflow-app \
+  --name northstar-mlflow \
+  --artifact-store-uri s3://northstar-dev-data-<account>/mlflow/ \
+  --role-arn arn:aws:iam::<account>:role/northstar-dev-DataScientist \
+  --query Arn --output text
+```
+
+> **`create-mlflow-app` requires a recent AWS CLI.** The API postdates many installed versions, and an old CLI reports `Invalid choice: 'create-mlflow-app'` — which reads like a typo, not a version problem. Check with `aws --version` and upgrade if the command is missing. Same applies to `boto3`/`botocore` if you call it from Python.
+
+Poll until `Status` is `Created` (**measured: 4 min 52 s**), then point your training code at the ARN:
+
+```python
+import mlflow
+
+mlflow.set_tracking_uri(APP_ARN)          # the arn:aws:sagemaker:...:mlflow-app/... string
+mlflow.set_experiment("northstar-churn")
+
+with mlflow.start_run(run_name="xgb-baseline"):
+    mlflow.log_params({"max_depth": 6, "eta": 0.2, "num_round": 200,
+                       "scale_pos_weight": 3.545})
+    mlflow.log_metrics({"auc": auc, "precision_at_10pct": p10,
+                        "recall_at_10pct": r10})
+```
+
+You need two packages: `mlflow` **and** `sagemaker-mlflow`. The second is the auth plugin that teaches MLflow to speak to an `arn:aws:sagemaker:...` tracking URI with SigV4. Without it you get a connection error that says nothing about credentials.
+
+Verified 2026-08-07: an App created this way ran **MLflow 3.10.1** server-side, accepted three runs, and returned them through `mlflow.search_runs` with params and metrics intact — from a plain IAM user with **no SageMaker Studio domain**. You do not need Studio for this.
+
+**What earns the 5 points:** three runs is the floor, not the goal. Log the hyperparameters you actually varied, and make the comparison mean something — three runs with identical params and different seeds is not an experiment, it is the same experiment three times.
 
 **Guard against leakage.** `churn_risk_score` is a feature in the Feature Group, and it is a pure recency heuristic. You may include it, but if you do, report results **with and without it**. Do not include `churn_label` as an input, and do not construct features from post-`T` data.
 
@@ -1511,7 +1552,7 @@ Also include: confusion matrix at your chosen threshold, feature importance plot
 | Training data pulled from Feature Store offline store via Athena | 5 | Training script issues an Athena query against the offline store table; no CSV path in the data-loading code |
 | Model meets precision and recall thresholds | 8 | Both met on a held-out split; AUC reported but not thresholded |
 | **Beats the recency-only baseline with a CI that excludes zero** | 7 | Both models' AUC reported, lift computed, and a 95% CI on the lift shown. A point estimate alone earns 3 of 7 |
-| SageMaker Experiments tracking | 5 | ≥3 runs visible as trials with logged metrics |
+| MLflow App experiment tracking | 5 | ≥3 runs in the MLflow App, each with logged params **and** metrics, retrievable via `mlflow.search_runs` |
 | Model registered as `PendingManualApproval` | 5 | Visible in Model Registry with correct status and metadata |
 | Slice evaluation across loyalty tiers | 5 | AUC, recall **and test-set n** per tier; the weakest tier flagged and discussed; any tier too small to conclude from called out as such |
 
@@ -1528,8 +1569,7 @@ Generate personalised retention offers for customers your Task 1 model flags as 
 
 > **A real data-versus-policy gap, left in deliberately.** `POL-LOY-011` defines tier by
 > **trailing 12-month spend**. Lab 2's `loyalty_tier` feature is derived from
-> `total_lifetime_value` — all spend in the observation window, which for most customers is
-> close to but not exactly 12 months.
+> `total_lifetime_value` — all spend in the observation window, which for most customers is close to but not exactly 12 months.
 >
 > The tier in your feature store is therefore an *approximation* of the tier the policy
 > defines, and for customers near a threshold the two can disagree. This is not a bug in the
@@ -1540,6 +1580,7 @@ Generate personalised retention offers for customers your Task 1 model flags as 
 > customer's *actual* tier does not carry is a faithfulness failure whatever your feature store
 > says — which argues for stating tier-dependent benefits conditionally, or for reading tier
 > from the system of record at generation time rather than from the feature store.
+> 
 **Output:** a 2–3 sentence retention offer, grounded in actual policy, with a specific product-category recommendation.
 
 **Requirements:**
@@ -1640,13 +1681,22 @@ bash scripts/teardown-lab3.sh
 
 Endpoints bill hourly until deleted and are the most common source of surprise charges in this course. The script deletes endpoints, endpoint configs, and any running training or processing jobs, then verifies nothing billable remains.
 
+**Keep your MLflow App.** It costs nothing, scales to zero, and Labs 4 and 6 log to it. The teardown script leaves it alone deliberately.
+
+**It does check for a Tracking Server**, because that is the expensive one:
+
+```bash
+aws sagemaker list-mlflow-tracking-servers \
+  --query 'TrackingServerSummaries[].[TrackingServerName,TrackingServerStatus]' --output text
+```
+
+Empty output is what you want. Anything listed is billing at **$0.60/hr** right now — delete it with `delete-mlflow-tracking-server` and note it in your teardown evidence. **Stopping a tracking server is not the same as deleting it**, and a stopped server can be restarted by a later API call; delete it.
+
 If you also finished with the Lab 2 infrastructure, run `scripts/teardown-lab2.sh` afterwards — and remember that `terraform destroy` alone does not fully clean up (see Lab 2's teardown section).
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
 | Teardown evidence submitted | — | **Gate, not points:** `docs/lab3-teardown-output.txt` shows no endpoints and no running jobs. Task 4 is capped at half credit until produced. |
-
----
 
 # Lab 4: XOps + CI/CD Pipeline + Testing
 
@@ -1874,7 +1924,11 @@ Document and implement the MLOps configuration for the churn model lifecycle.
 
 - **Champion-challenger definition**: When is a new model "better enough" to replace the champion? Write the numeric criterion.
 - **Retraining triggers**: Define (a) a scheduled trigger (e.g., weekly) and (b) a performance-based trigger (e.g., AUC drops below threshold on production data). Both must be automatable — not manual decisions.
-- **Experiment tracking**: Show SageMaker Experiments or MLflow tracking at least 3 hyperparameter combinations with their metrics. Include a screenshot or CLI output.
+- **Experiment tracking**: Show your **MLflow App** (created in Lab 3) tracking at least 3 hyperparameter combinations with their metrics. Include `mlflow.search_runs` output or a screenshot of the comparison view.
+
+> **Your pipeline will create SageMaker Experiments whether you ask it to or not.** A SageMaker Pipeline auto-creates an Experiment named after the pipeline and one Trial per execution — the reference account has `northstar-churn-pipeline` with 11 trials and `SourceType: SageMakerPipeline`, none of which anyone requested. So you will see Experiments in the console even though this course tracks with MLflow.
+>
+> **Do not submit those as your experiment-tracking evidence.** They record *that a pipeline ran*, not *what you varied and what it did to the metrics*. That distinction is the point of the requirement. Auto-generated lineage is free and nearly content-free; deliberate tracking is the thing that costs you effort and earns the marks.
 - **Model lineage**: For each model version in the Registry, the associated training data version (S3 URI + timestamp), code commit SHA, and evaluation metrics must be stored as model card metadata.
 
 **Rubric:**
@@ -1883,7 +1937,7 @@ Document and implement the MLOps configuration for the churn model lifecycle.
 |------|--------|---------------|
 | Champion-challenger criterion is numeric and binary | 5 | Criterion is a specific number, not "if it is better" |
 | Both retraining triggers defined and automatable | 8 | Each trigger has a specific threshold and names the AWS service that would fire it |
-| Experiment tracking shows ≥3 runs | 4 | Screenshot or output confirms ≥3 trials in SageMaker Experiments |
+| Experiment tracking shows ≥3 runs | 4 | ≥3 **MLflow App** runs with differing hyperparameters and logged metrics. Pipeline-auto-generated Experiments do not count |
 | Model lineage metadata stored in Model Registry | 3 | `describe_model_package()` output shows training data URI and commit SHA |
 
 ### Task 4 — XOps Maturity Assessment (20 points)
@@ -1912,8 +1966,6 @@ Top priority investment: [One concrete change that would advance maturity]
 | Maturity level supported by specific evidence | 10 | Assessment references specific files/configs in the repo, not generic claims |
 | Gap analysis is specific, not vague | 6 | "Missing automated drift detection (see Lab 6)" not "need more automation" |
 | Priority investment is actionable | 4 | Names a specific tool or practice, not "improve testing" |
-
----
 
 # Lab 5: Deployment & Scaling + Security
 
@@ -2395,6 +2447,27 @@ sagemaker-sklearn-container 2.0 requires protobuf==3.20.2, but you have protobuf
 
 **The job succeeds anyway** — nothing in the drift analysis uses those packages. Verified. But note the consequence: `botocore` inside that container is now on an unsupported `urllib3`, so **do not try to call `put-metric-data` from inside the job.** Publish your metric from the launcher after the job returns, which is what `publish_metrics.py` does.
 
+**Also log each drift run to your MLflow App.** You created it in Lab 3 for training runs; drift belongs there too:
+
+```python
+import mlflow
+mlflow.set_tracking_uri(APP_ARN)
+mlflow.set_experiment("northstar-drift")
+
+with mlflow.start_run(run_name=f"drift-{job_name}"):
+    mlflow.log_params({"baseline_records": s["baseline_records"],
+                       "captured_records": s["captured_records"],
+                       "variant": "champion"})
+    for feat, d in s["per_feature"].items():
+        mlflow.log_metric(f"{d['method']}_{feat}", d["value"])
+    mlflow.log_metric("violation_count", s["violation_count"])
+    mlflow.log_artifact("drift_report.html")
+```
+
+**Why bother, when the numbers are already in CloudWatch?** Because they answer different questions. CloudWatch tells you *what drift is right now* and pages someone when it crosses a line. MLflow tells you *how drift has moved across runs* and lets you put a drift measurement next to the training run of the model that produced it. When you eventually retrain, the question is "has the world moved far enough from what this model was trained on?" — that is a comparison between a drift run and a training run, and only MLflow holds both.
+
+CloudWatch also expires custom metrics after 15 months and cannot store the HTML report. `log_artifact` keeps the full Evidently report attached to the run that produced it.
+
 **Capture is partitioned per variant** — `datacapture/<endpoint>/<variant>/<yyyy>/<mm>/<dd>/<hh>/`. If you ran a two-variant canary in Lab 5, point the job at one variant's prefix, and say in your write-up which one and why.
 
 Reference run, verified 2026-08-07 on `ml.t3.medium`: 10,000 baseline rows against 800 captured records, **1 min 59 s** billed. Output:
@@ -2768,6 +2841,18 @@ Reproduced from the table above: hosting 0.5889 / 0.4328 / 0.0192 hr, processing
 Two of these are worth noticing before you use them. The `ml.t3.large` figure of 0.0958 hr is **5 min 45 s** — one successful monitoring analyzer run. The `ml.t3.medium` figure of 0.2283 hr is **13 min 42 s** — one analyzer run that ran out of memory and failed. **Failed jobs bill.** A cost model built only from successful runs understates the truth, and in early-stage ML the failures are frequently the larger number. Yours will be.
 
 > **These two figures are from SageMaker Model Monitor, which Lab 6 no longer uses** — its Spark analyzer needed `ml.t3.large` and OOM'd on `ml.t3.medium`. Lab 6 now runs Evidently, which completes the same comparison in **1 min 59 s on `ml.t3.medium`** for about **$0.0017**. The July figures are left here deliberately, because the comparison is the lesson: **a tool substitution changed this line item by roughly 9x while changing nothing about the business question being answered.** When you build your cost model in Task 2, that is the kind of lever worth looking for — far more of your bill is architecture choice than volume.
+
+> **The same lever, one order of magnitude larger — experiment tracking.** AWS offers two MLflow products that do the same job for your training runs:
+>
+> | | MLflow **App** (what Lab 3 uses) | MLflow **Tracking Server** |
+> |---|---|---|
+> | Billing model | serverless, **no additional charge** | **$0.60/hr**, from creation to deletion |
+> | Cost per month, left running | **$0.00** | **~$438** |
+> | Cost while you sleep | $0.00 | $4.80/night |
+>
+> **Model this one in Task 2 and notice what it does to your unit economics.** The tracking server is not a bigger instance or a faster tier — it is the *same capability with a different billing model*, and it costs infinitely more than free. A platform team that picked it without asking would have added ~$5,300/year per environment to NorthStar's bill for nothing.
+>
+> This is the shape of most real AI cost overruns. They are rarely "we used too much"; they are usually "we provisioned something that bills by the hour to do a job that bills by the request." **When you present your scorecard, an architecture line item you eliminated is worth more than a usage line item you trimmed** — and it is far more defensible to a CFO, because it does not require anyone to do less work.
 
 ## Deliverable
 

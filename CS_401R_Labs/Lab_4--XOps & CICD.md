@@ -224,7 +224,11 @@ Document and implement the MLOps configuration for the churn model lifecycle.
 
 - **Champion-challenger definition**: When is a new model "better enough" to replace the champion? Write the numeric criterion.
 - **Retraining triggers**: Define (a) a scheduled trigger (e.g., weekly) and (b) a performance-based trigger (e.g., AUC drops below threshold on production data). Both must be automatable — not manual decisions.
-- **Experiment tracking**: Show SageMaker Experiments or MLflow tracking at least 3 hyperparameter combinations with their metrics. Include a screenshot or CLI output.
+- **Experiment tracking**: Show your **MLflow App** (created in Lab 3) tracking at least 3 hyperparameter combinations with their metrics. Include `mlflow.search_runs` output or a screenshot of the comparison view.
+
+> **Your pipeline will create SageMaker Experiments whether you ask it to or not.** A SageMaker Pipeline auto-creates an Experiment named after the pipeline and one Trial per execution — the reference account has `northstar-churn-pipeline` with 11 trials and `SourceType: SageMakerPipeline`, none of which anyone requested. So you will see Experiments in the console even though this course tracks with MLflow.
+>
+> **Do not submit those as your experiment-tracking evidence.** They record *that a pipeline ran*, not *what you varied and what it did to the metrics*. That distinction is the point of the requirement. Auto-generated lineage is free and nearly content-free; deliberate tracking is the thing that costs you effort and earns the marks.
 - **Model lineage**: For each model version in the Registry, the associated training data version (S3 URI + timestamp), code commit SHA, and evaluation metrics must be stored as model card metadata.
 
 **Rubric:**
@@ -233,7 +237,7 @@ Document and implement the MLOps configuration for the churn model lifecycle.
 |------|--------|---------------|
 | Champion-challenger criterion is numeric and binary | 5 | Criterion is a specific number, not "if it is better" |
 | Both retraining triggers defined and automatable | 8 | Each trigger has a specific threshold and names the AWS service that would fire it |
-| Experiment tracking shows ≥3 runs | 4 | Screenshot or output confirms ≥3 trials in SageMaker Experiments |
+| Experiment tracking shows ≥3 runs | 4 | ≥3 **MLflow App** runs with differing hyperparameters and logged metrics. Pipeline-auto-generated Experiments do not count |
 | Model lineage metadata stored in Model Registry | 3 | `describe_model_package()` output shows training data URI and commit SHA |
 
 ### Task 4 — XOps Maturity Assessment (20 points)

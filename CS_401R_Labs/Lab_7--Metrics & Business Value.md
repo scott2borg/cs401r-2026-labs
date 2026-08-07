@@ -181,6 +181,18 @@ Two of these are worth noticing before you use them. The `ml.t3.large` figure of
 
 > **These two figures are from SageMaker Model Monitor, which Lab 6 no longer uses** — its Spark analyzer needed `ml.t3.large` and OOM'd on `ml.t3.medium`. Lab 6 now runs Evidently, which completes the same comparison in **1 min 59 s on `ml.t3.medium`** for about **$0.0017**. The July figures are left here deliberately, because the comparison is the lesson: **a tool substitution changed this line item by roughly 9x while changing nothing about the business question being answered.** When you build your cost model in Task 2, that is the kind of lever worth looking for — far more of your bill is architecture choice than volume.
 
+> **The same lever, one order of magnitude larger — experiment tracking.** AWS offers two MLflow products that do the same job for your training runs:
+>
+> | | MLflow **App** (what Lab 3 uses) | MLflow **Tracking Server** |
+> |---|---|---|
+> | Billing model | serverless, **no additional charge** | **$0.60/hr**, from creation to deletion |
+> | Cost per month, left running | **$0.00** | **~$438** |
+> | Cost while you sleep | $0.00 | $4.80/night |
+>
+> **Model this one in Task 2 and notice what it does to your unit economics.** The tracking server is not a bigger instance or a faster tier — it is the *same capability with a different billing model*, and it costs infinitely more than free. A platform team that picked it without asking would have added ~$5,300/year per environment to NorthStar's bill for nothing.
+>
+> This is the shape of most real AI cost overruns. They are rarely "we used too much"; they are usually "we provisioned something that bills by the hour to do a job that bills by the request." **When you present your scorecard, an architecture line item you eliminated is worth more than a usage line item you trimmed** — and it is far more defensible to a CFO, because it does not require anyone to do less work.
+
 ## Deliverable
 
 **One file: `docs/lab7-value-scorecard.md`**, with five top-level sections numbered to match the tasks:

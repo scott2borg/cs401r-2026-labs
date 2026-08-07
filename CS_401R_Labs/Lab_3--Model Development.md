@@ -3,7 +3,7 @@
 **Assigned:** Thu Oct 1 | **Due:** Sat Oct 17, midnight
 **Chapters:** *Model Development* (Sessions 1–3: Fine-Tuning, RAG, Agents)
 **Builds on:** Lab 2 — models train on the Feature Store features and `churn_label` you produced
-**Primary tools:** SageMaker (training, Experiments, Model Registry), Bedrock
+**Primary tools:** SageMaker (training, MLflow App, Model Registry), Bedrock
 **Prerequisite:** *Pre-Lab 3 — Bedrock Model Access Setup*, due Wed Sep 30 — Tracks B and C cannot start without it.
 **Prerequisite (only if training on SageMaker):** *Pre-Lab 4 — SageMaker Training Quota Setup*, due Wed Sep 30. Your on-demand training quota is **0** by default, so `CreateTrainingJob` fails until an increase is approved. Train locally instead and every Track A rubric item is still reachable.
 
@@ -95,9 +95,56 @@ Train a churn model on the Lab 2 Feature Store data.
 - Training data comes from the **Feature Store offline store** via Athena — not a CSV export and not the `features/customers/` Parquet directly. The point is to use the feature platform you built.
 - Model: XGBoost via the `sagemaker.xgboost` estimator.
 - Hyperparameters (`max_depth`, `eta`, `num_round`, `scale_pos_weight`) passed as arguments, never hardcoded.
-- Every training run tracked as a trial in **SageMaker Experiments**.
+- Every training run tracked as a run in a **SageMaker MLflow App** — see *Experiment tracking* below.
 - Final model registered in the **Model Registry** with status `PendingManualApproval`. Never auto-approve.
 - Class imbalance handled explicitly — roughly 22% positives. Justify your `scale_pos_weight`. (Reference run derives 3.545 from the training split rather than hardcoding it.)
+
+### Experiment tracking — use an MLflow App, and read the warning first
+
+> ## ⚠ There are two MLflow products on SageMaker. One of them will destroy your budget.
+>
+> | | **MLflow App** ✅ | MLflow **Tracking Server** ❌ |
+> |---|---|---|
+> | API | `CreateMlflowApp` | `CreateMlflowTrackingServer` |
+> | Cost | **no additional charge** | **$0.60/hr**, billed until deleted |
+> | Left running one weekend | $0 | **~$43** |
+>
+> The course budget alarm for **all seven labs** is **$10/month**. A single forgotten tracking server breaches it in **16.7 hours** and costs four times the entire course budget in a weekend. It is not an endpoint, so `teardown-lab5.sh` will not catch it, and nothing about it looks expensive in the console.
+>
+> **Most search results and tutorials describe the Tracking Server**, because it shipped first. If you find yourself sizing an instance or picking `Small`/`Medium`, stop — you are on the wrong one. The App is serverless, scales to zero, and has no size to choose.
+
+Create the App once. It takes about five minutes and you keep it for the whole course.
+
+```bash
+aws sagemaker create-mlflow-app \
+  --name northstar-mlflow \
+  --artifact-store-uri s3://northstar-dev-data-<account>/mlflow/ \
+  --role-arn arn:aws:iam::<account>:role/northstar-dev-DataScientist \
+  --query Arn --output text
+```
+
+> **`create-mlflow-app` requires a recent AWS CLI.** The API postdates many installed versions, and an old CLI reports `Invalid choice: 'create-mlflow-app'` — which reads like a typo, not a version problem. Check with `aws --version` and upgrade if the command is missing. Same applies to `boto3`/`botocore` if you call it from Python.
+
+Poll until `Status` is `Created` (**measured: 4 min 52 s**), then point your training code at the ARN:
+
+```python
+import mlflow
+
+mlflow.set_tracking_uri(APP_ARN)          # the arn:aws:sagemaker:...:mlflow-app/... string
+mlflow.set_experiment("northstar-churn")
+
+with mlflow.start_run(run_name="xgb-baseline"):
+    mlflow.log_params({"max_depth": 6, "eta": 0.2, "num_round": 200,
+                       "scale_pos_weight": 3.545})
+    mlflow.log_metrics({"auc": auc, "precision_at_10pct": p10,
+                        "recall_at_10pct": r10})
+```
+
+You need two packages: `mlflow` **and** `sagemaker-mlflow`. The second is the auth plugin that teaches MLflow to speak to an `arn:aws:sagemaker:...` tracking URI with SigV4. Without it you get a connection error that says nothing about credentials.
+
+Verified 2026-08-07: an App created this way ran **MLflow 3.10.1** server-side, accepted three runs, and returned them through `mlflow.search_runs` with params and metrics intact — from a plain IAM user with **no SageMaker Studio domain**. You do not need Studio for this.
+
+**What earns the 5 points:** three runs is the floor, not the goal. Log the hyperparameters you actually varied, and make the comparison mean something — three runs with identical params and different seeds is not an experiment, it is the same experiment three times.
 
 **Guard against leakage.** `churn_risk_score` is a feature in the Feature Group, and it is a pure recency heuristic. You may include it, but if you do, report results **with and without it**. Do not include `churn_label` as an input, and do not construct features from post-`T` data.
 
@@ -141,7 +188,7 @@ Also include: confusion matrix at your chosen threshold, feature importance plot
 | Training data pulled from Feature Store offline store via Athena | 5 | Training script issues an Athena query against the offline store table; no CSV path in the data-loading code |
 | Model meets precision and recall thresholds | 8 | Both met on a held-out split; AUC reported but not thresholded |
 | **Beats the recency-only baseline with a CI that excludes zero** | 7 | Both models' AUC reported, lift computed, and a 95% CI on the lift shown. A point estimate alone earns 3 of 7 |
-| SageMaker Experiments tracking | 5 | ≥3 runs visible as trials with logged metrics |
+| MLflow App experiment tracking | 5 | ≥3 runs in the MLflow App, each with logged params **and** metrics, retrievable via `mlflow.search_runs` |
 | Model registered as `PendingManualApproval` | 5 | Visible in Model Registry with correct status and metadata |
 | Slice evaluation across loyalty tiers | 5 | AUC, recall **and test-set n** per tier; the weakest tier flagged and discussed; any tier too small to conclude from called out as such |
 
@@ -269,6 +316,17 @@ bash scripts/teardown-lab3.sh
 ```
 
 Endpoints bill hourly until deleted and are the most common source of surprise charges in this course. The script deletes endpoints, endpoint configs, and any running training or processing jobs, then verifies nothing billable remains.
+
+**Keep your MLflow App.** It costs nothing, scales to zero, and Labs 4 and 6 log to it. The teardown script leaves it alone deliberately.
+
+**It does check for a Tracking Server**, because that is the expensive one:
+
+```bash
+aws sagemaker list-mlflow-tracking-servers \
+  --query 'TrackingServerSummaries[].[TrackingServerName,TrackingServerStatus]' --output text
+```
+
+Empty output is what you want. Anything listed is billing at **$0.60/hr** right now — delete it with `delete-mlflow-tracking-server` and note it in your teardown evidence. **Stopping a tracking server is not the same as deleting it**, and a stopped server can be restarted by a later API call; delete it.
 
 If you also finished with the Lab 2 infrastructure, run `scripts/teardown-lab2.sh` afterwards — and remember that `terraform destroy` alone does not fully clean up (see Lab 2's teardown section).
 

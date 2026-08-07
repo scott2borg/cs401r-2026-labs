@@ -185,6 +185,27 @@ sagemaker-sklearn-container 2.0 requires protobuf==3.20.2, but you have protobuf
 
 **The job succeeds anyway** — nothing in the drift analysis uses those packages. Verified. But note the consequence: `botocore` inside that container is now on an unsupported `urllib3`, so **do not try to call `put-metric-data` from inside the job.** Publish your metric from the launcher after the job returns, which is what `publish_metrics.py` does.
 
+**Also log each drift run to your MLflow App.** You created it in Lab 3 for training runs; drift belongs there too:
+
+```python
+import mlflow
+mlflow.set_tracking_uri(APP_ARN)
+mlflow.set_experiment("northstar-drift")
+
+with mlflow.start_run(run_name=f"drift-{job_name}"):
+    mlflow.log_params({"baseline_records": s["baseline_records"],
+                       "captured_records": s["captured_records"],
+                       "variant": "champion"})
+    for feat, d in s["per_feature"].items():
+        mlflow.log_metric(f"{d['method']}_{feat}", d["value"])
+    mlflow.log_metric("violation_count", s["violation_count"])
+    mlflow.log_artifact("drift_report.html")
+```
+
+**Why bother, when the numbers are already in CloudWatch?** Because they answer different questions. CloudWatch tells you *what drift is right now* and pages someone when it crosses a line. MLflow tells you *how drift has moved across runs* and lets you put a drift measurement next to the training run of the model that produced it. When you eventually retrain, the question is "has the world moved far enough from what this model was trained on?" — that is a comparison between a drift run and a training run, and only MLflow holds both.
+
+CloudWatch also expires custom metrics after 15 months and cannot store the HTML report. `log_artifact` keeps the full Evidently report attached to the run that produced it.
+
 **Capture is partitioned per variant** — `datacapture/<endpoint>/<variant>/<yyyy>/<mm>/<dd>/<hh>/`. If you ran a two-variant canary in Lab 5, point the job at one variant's prefix, and say in your write-up which one and why.
 
 Reference run, verified 2026-08-07 on `ml.t3.medium`: 10,000 baseline rows against 800 captured records, **1 min 59 s** billed. Output:
