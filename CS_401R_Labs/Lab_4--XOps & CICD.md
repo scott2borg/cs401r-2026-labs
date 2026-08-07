@@ -3,6 +3,7 @@
 **Assigned:** Thu Oct 15 | **Due:** Sat Oct 31, midnight
 **Chapters:** *XOps Stack*, *Testing & Evaluation*, *Continuous Delivery*
 **Builds on:** Labs 1–3 — automates the lifecycle of your Lab 3 churn model
+**Prerequisite:** *Pre-Lab 4 — SageMaker Training Quota Setup*, due Wed Sep 30. **There is no local fallback in this lab** — without the quota, the pipeline cannot complete.
 
 ## Objective
 
@@ -13,6 +14,81 @@ Automate everything. A model that requires manual steps to test, evaluate, and d
 - `buildspec.yml` — CodeBuild build specification skeleton
 - `pipeline.yaml` — CodePipeline definition starter
 - `tests/test_data.py`, `tests/test_features.py`, `tests/test_model.py` — populated pytest suites covering the processed dataset, the Lab 2 feature functions, and the Lab 3 model contract. Several assertions are left as `TODO` for you to implement.
+- `tests/conftest.py` — registers `--model-path` and `--eval-metrics-path`. Leave it where it is; pytest only reads `pytest_addoption` from `conftest.py`.
+
+## Before you deploy anything — four prerequisites
+
+None of these are created for you, and each one fails in a way that does not
+name the real cause. Do them first.
+
+**1. An artifacts bucket, versioned.** CodePipeline needs a working bucket of
+its own for stage artifacts. This is **not** the `northstar-dev-data-<account>`
+data bucket and must not be pointed at it. Versioning is required — CodePipeline
+will not use an unversioned bucket.
+
+```bash
+AB=northstar-dev-cicd-artifacts-$(aws sts get-caller-identity --query Account --output text)
+aws s3api create-bucket --bucket "$AB"
+aws s3api put-bucket-versioning --bucket "$AB" \
+  --versioning-configuration Status=Enabled
+```
+
+**2. A GitHub connection, created and authorized *before* the stack.** A
+CodeStar connection created by CloudFormation is born `PENDING`, and a
+`PENDING` connection can only be completed by a human in the console — so a
+stack that creates its own connection comes up "successfully" with a Source
+stage that can never pull. Create it once, authorize it, then pass the ARN in.
+
+```bash
+aws codeconnections create-connection \
+  --provider-type GitHub --connection-name northstar-github
+# Console: Developer Tools → Settings → Connections → Update pending connection
+aws codeconnections list-connections \
+  --query "Connections[?ConnectionName=='northstar-github'].[ConnectionStatus,ConnectionArn]" \
+  --output text
+```
+
+It must read **`AVAILABLE`** before the pipeline will run.
+
+**3. The SageMaker Pipeline must exist.** The build triggers a pipeline named
+`northstar-churn-pipeline`; a `start-pipeline-execution` against a pipeline that
+was never defined fails with `ValidationException`. `pipeline_definition.py`
+creates it, and the buildspec upserts it on every build so each execution is
+pinned to the commit that triggered it.
+
+**4. Deploy with `CAPABILITY_NAMED_IAM`**, not `CAPABILITY_IAM` — the template
+creates named roles.
+
+```bash
+aws cloudformation deploy \
+  --template-file pipeline.yaml --stack-name northstar-cicd \
+  --parameter-overrides \
+      ProjectName=northstar Environment=dev \
+      GitHubOwner=YOUR_GITHUB_USERNAME GitHubRepo=northstar-ai-platform \
+      GitHubBranch=main ArtifactsBucket="$AB" \
+      GitHubConnectionArn=<arn from step 2> \
+      SageMakerRoleArn=$(terraform -chdir=infrastructure/environments/dev \
+                          output -raw ml_engineer_role_arn) \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> **The training job needs on-demand training quota, and the AWS default is
+> zero.** `ml.m5.large for training job usage` (`L-611FA074`) starts at **0** on
+> a new account and the TrainingStep fails with `ResourceLimitExceeded`.
+> **Unlike Lab 3, there is no local fallback here** — the whole point of the
+> lab is that the pipeline trains, so this quota is a hard prerequisite.
+>
+> You should already have filed this in [[Pre-Lab 4 — SageMaker Training Quota Setup]],
+> assigned back with Lab 2. If you did not, do it **now** and read Step 3 there
+> for the spot-training fallback — approval is not instant and Lab 4 is two
+> weeks long.
+>
+> ```bash
+> aws service-quotas get-service-quota --service-code sagemaker \
+>   --quota-code L-611FA074 --query 'Quota.Value' --output text
+> ```
+>
+> A non-zero number is the only evidence that matters.
 
 ## Tasks
 
@@ -36,9 +112,9 @@ Build a test suite that runs automatically in CI. Tests must be executable via `
 - Cover: normal case, boundary case (customer with 0 purchases), edge case (single transaction)
 
 **Model evaluation test** (`tests/test_model.py`):
-- AUC-ROC ≥ 0.72 on held-out validation set
 - Precision@top10% ≥ 0.50 and recall@top10% ≥ 0.25
-- **Baseline gate: AUC must exceed the recency-only baseline by ≥ 0.03.** Your training script has to emit `baseline_auc_roc` alongside `auc_roc` for this to be checkable. This is the gate that stops a model that has learned nothing beyond "days since last purchase" from reaching the registry.
+- **Baseline gate: the 95% CI on (model AUC − recency-only baseline AUC) must exclude zero.** Your training script has to emit `baseline_auc_roc` and the CI bounds alongside `auc_roc` for this to be checkable. This is the gate that stops a model that has learned nothing beyond "days since last purchase" from reaching the registry.
+- **There is deliberately no absolute AUC threshold.** A fixed AUC gate was removed on 2026-08-02: across 200 splits of the same data the reference model fell below the old 0.72 bar on 58% of them, so the gate was testing the random seed. Report AUC, gate on the interval.
 - Regression test: new model AUC ≥ (champion model AUC − 0.02)
 - Prediction shape: output is a probability between 0 and 1 for every input
 
@@ -60,25 +136,85 @@ Implement a CI/CD pipeline that connects: **code push → test → build → eva
 
 **Acceptable implementations:** AWS CodePipeline, GitHub Actions, or GitLab CI (your choice — document the rationale).
 
-**Required pipeline stages:**
+**Required pipeline phases.** Your pipeline must perform all five of these, in
+this order:
 
 1. **Source** — triggered by push to `main` branch
 2. **Test** — runs `pytest tests/`; pipeline fails and alerts if any test fails
 3. **Build** — packages training code; runs SageMaker Training Job with the new code
-4. **Evaluate** — runs evaluation tests against the new model; compares to champion
+4. **Evaluate** — runs the promotion gate against the new model's metrics
 5. **Register** — promotes model to SageMaker Model Registry with status `PendingManualApproval` if all gates pass
 
+> **Five phases is not five CodePipeline stages, and you are not required to
+> make them line up.** A CodePipeline *stage* is a deployment boundary — it
+> exists so artifacts can hand off and so a human can be inserted between two
+> points. A CI *phase* is a logical step. Forcing one stage per phase means
+> passing the model artifact between stages and standing up a CodeBuild project
+> per stage, which buys nothing here.
+>
+> The reference implementation uses **three** CodePipeline stages:
+>
+> | CodePipeline stage | Phases it performs | Where |
+> |---|---|---|
+> | `Source` | Source | CodeStar connection → GitHub `main` |
+> | `Build` | Test, Build, Evaluate, Register | `buildspec.yml`: `pre_build` runs `pytest tests/`; `build` upserts and runs the SageMaker Pipeline, which trains and registers; then the gate runs against the emitted metrics |
+> | `ManualApproval` | the human promotion decision | SNS-notified approval action |
+>
+> Grading is on the five **phases** being present, ordered and enforced — not
+> on the stage count in the console. Document your mapping either way.
+
 **Gate behavior:**
-- Pipeline must halt at the failed stage — not silently skip
-- A failed evaluation gate must send a CloudWatch alarm (email notification acceptable)
+- The pipeline must halt at the failed phase — not silently skip
+- A failed gate must halt the build **and** notify. The stack creates a CloudWatch alarm `northstar-ci-build-failure` and an SNS topic `northstar-model-approvals`; subscribe an address to the topic:
+
+```bash
+aws sns subscribe --topic-arn <ModelApprovalTopicArn from stack outputs> \
+  --protocol email --notification-endpoint you@example.com
+```
+
+> **Two traps in the notification path, both of which fail silently.** Wiring an
+> alarm is the easy part; proving it can actually tell you something is the
+> exercise.
+>
+> **1. `post_build` does not always run.** It runs when the *build* phase fails,
+> but **not** when `pre_build` fails — CodeBuild goes straight to `FINALIZING`
+> and skips it entirely. So a metric published from `post_build` is absent for
+> exactly the failure the rubric asks you to demonstrate. The reference alarm
+> watches `AWS/CodeBuild` `FailedBuilds`, which CodeBuild emits itself and which
+> no phase failure can skip. If you publish your own metric instead, prove it
+> survives a *test* failure, not just a gate failure.
+>
+> **2. An SNS topic policy that omits `cloudwatch.amazonaws.com` breaks
+> notification without breaking the alarm.** The alarm still evaluates, still
+> transitions to `ALARM`, still turns the console red — and publishes nothing.
+> The only evidence is one line here:
+>
+> ```bash
+> aws cloudwatch describe-alarm-history --alarm-name northstar-ci-build-failure \
+>   --history-item-type Action --max-records 5
+> # Failed to execute action arn:aws:sns:...:northstar-model-approvals
+> ```
+>
+> Run that command against your own alarm. **An alarm that fires and cannot
+> notify is worse than no alarm, because it looks like coverage.** Note also
+> that SNS rejects a multi-statement topic policy unless every statement has a
+> unique `Sid`.
+>
+> **How to demonstrate all of this:** add a deliberately failing assertion to
+> `tests/`, push, and confirm four things — the run halts in the phase that owns
+> tests, the Model Registry gains **no** new version, the alarm goes `ALARM`,
+> and `describe-alarm-history` says *Successfully executed action*. Then revert
+> and confirm the reverse: green build, registry gains a version, alarm returns
+> to `OK`.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| All 5 stages present and sequenced correctly | 12 | Pipeline YAML/config shows all stages; TA can trigger a run |
-| Pipeline halts correctly on test failure | 10 | TA introduces a deliberate test failure; pipeline stops at Test stage |
-| Model Registry promotion only on green gates | 8 | Model Registry shows `PendingManualApproval` only after a clean run |
+| All 5 phases present, ordered, with a documented stage mapping | 10 | Pipeline config plus your mapping shows all five; TA can trigger a run |
+| Pipeline halts correctly on test failure | 8 | TA introduces a deliberate test failure; the run stops in the phase that owns tests and does **not** reach Register |
+| Model Registry promotion only on green gates | 6 | Model Registry shows `PendingManualApproval` only after a clean run; registry gains **no** version on the failed run |
+| Failure notification demonstrably delivers | 6 | On the failed run the alarm reaches `ALARM` **and** `describe-alarm-history --history-item-type Action` reads *Successfully executed action*. An alarm that fires without delivering scores 0 here |
 
 ### Task 3 — MLOps Configuration (20 points)
 

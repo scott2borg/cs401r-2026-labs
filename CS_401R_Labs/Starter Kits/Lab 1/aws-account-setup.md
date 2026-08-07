@@ -211,16 +211,16 @@ echo "Done. Check the AWS Console to confirm no resources are running."
 
 These estimates assume you shut down resources after each session and destroy with `terraform destroy` after submitting.
 
-| Lab | Key AWS Services | Estimated Cost |
+| Lab | Key AWS Services                              | Estimated Cost |
 |-----|-----------------|----------------|
-| 1 | VPC, S3, SageMaker Domain | ~$3–6 |
-| 2 | Glue ETL, S3, NAT Gateway (destroy after) | ~$6–10 |
+| 1 | VPC, S3, SageMaker Domain                     | ~$3–6 |
+| 2 | Glue ETL, S3, NAT Gateway (destroy after)     | ~$6–10 |
 | 3 | SageMaker Training (XGBoost), Bedrock (Haiku) | ~$12–18 |
-| 4 | CodePipeline, CodeBuild, SageMaker Training | ~$8–14 |
-| 5 | SageMaker Endpoint (brief), Secrets Manager | ~$6–10 |
-| 6 | Model Monitor, CloudWatch, SageMaker Endpoint | ~$10–16 |
-| 7 | Athena queries, CloudWatch custom metrics | ~$2–5 |
-| **Total** | | **~$47–79** |
+| 4 | CodePipeline, CodeBuild, SageMaker Training   | ~$8–14 |
+| 5 | SageMaker Endpoint (brief), Secrets Manager   | ~$6–10 |
+| 6 | SageMaker Endpoint, CloudWatch, Evidently drift job | ~$10–16 |
+| 7 | Athena queries, CloudWatch custom metrics     | ~$2–5 |
+| **Total** |                                               | **~$47–79** |
 
 You have $200 in credits — there is buffer. But a single forgotten endpoint or NAT Gateway can consume that buffer in a week.
 

@@ -21,7 +21,7 @@ Use this document to understand the shape of the data before it arrives in Lab 2
 | `state` | string | No | Two-letter US/CA state/province code. |
 | `zip_code` | string | No | 5-digit US zip or Canadian postal code prefix. |
 | `lifetime_spend` | float | No | Total spend since signup, in USD. |
-| `churn_label` | integer | No | Binary: 1 = churned (no purchase in 90 days as of snapshot date), 0 = active. ~15% positive rate. |
+| `churn_label` | integer | No | Binary: 1 = churned (no purchase in the 90 days following the snapshot date), 0 = active. ~22% positive rate in the sample dataset. |
 | `churn_date` | date | Yes | Date of last purchase before churn. Null if `churn_label = 0`. |
 | `snapshot_date` | date | No | Date this record reflects. All rows use the same snapshot date. |
 

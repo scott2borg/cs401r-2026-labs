@@ -31,7 +31,7 @@ This course has seven labs. Every lab adds a layer to the system — the **North
 All three systems share a single AWS platform. You build that platform across the seven labs.
 
 **Data Sources (simulated):**
-- `northstar-raw-sample.csv` — transaction-level purchase history: ~19,500 rows across 1,200 customers, spanning 2025-04-01 to 2026-06-30. One row per purchase. Deliberately dirty; Lab 2 cleans it.
+- `northstar-raw-sample.csv` — transaction-level purchase history: ~163,000 rows across ~11,400 customers, spanning 2025-04-01 to 2026-06-30. One row per purchase. Deliberately dirty; Lab 2 cleans it.
 - `northstar-policy-docs/` — NorthStar return policy, loyalty program terms, shipping policy, and customer FAQ. The RAG corpus for Lab 3 Track B.
 
 The transaction file spans an **observation window** (through 2026-04-01) and a **90-day holdout** after it. Lab 2 computes features from the observation window and derives `churn_label` from the holdout, which is what makes the Lab 3 churn model honest rather than circular.
@@ -91,7 +91,9 @@ northstar-ai-platform/
 
 Labs are scaffolded to fade as you progress. Early labs provide more structure; by Lab 5, you are building without templates.
 
-**One out-of-band prerequisite:** *Pre-Lab 3 — Bedrock Model Access Setup* is assigned with Lab 2 (Thu Sep 17) and due **Wed Sep 30**, before Lab 3 opens. On a new AWS account every Bedrock inference quota starts at zero, and access requires a one-time Anthropic use-case form plus per-model quota increases that AWS reviews on its own schedule. Lab 3 Track B and C cannot start without it; Track A is unaffected. It is graded within Lab 3 Task 4.
+**Two out-of-band prerequisites:** *Pre-Lab 3 — Bedrock Model Access Setup* is assigned with Lab 2 (Thu Sep 17) and due **Wed Sep 30**, before Lab 3 opens. On a new AWS account every Bedrock inference quota starts at zero, and access requires a one-time Anthropic use-case form plus per-model quota increases that AWS reviews on its own schedule. Lab 3 Track B and C cannot start without it; Track A is unaffected. It is graded within Lab 3 Task 4.
+
+*Pre-Lab 4 — SageMaker Training Quota Setup* is assigned at the same time (Thu Sep 17) and also due **Wed Sep 30**, six weeks before Lab 4 opens. The AWS default on-demand SageMaker training quota is **zero instances** on a new account, so the training job Lab 4's pipeline runs fails with `ResourceLimitExceeded` until an increase is approved. **Unlike Bedrock, this one has no unaffected track** — Lab 4 cannot be completed without it. Lab 3 is only partly affected: train locally and Track A is fine. It is verified within Lab 4 Task 2.
 
 | Lab | Data Provided | Infrastructure Templates | Code Scaffolding |
 |-----|--------------|--------------------------|-----------------|
@@ -127,7 +129,7 @@ Each lab is graded on a **100-point scale** and weighted equally in the final gr
 
 Build the NorthStar Retail AI platform skeleton on AWS — twice. First by hand in the console (Part A), then as Terraform code (Part B). The sequence is deliberate: you cannot write good Infrastructure as Code for a system you do not understand at the API level. Part A forces you to understand every resource and why it exists. Part B teaches you what IaC is actually automating.
 
-By the end of this lab you will have: a mental model of the platform architecture, evidence that you built it manually, and a Terraform codebase that rebuilds it from scratch with a single command.
+By the end of this lab, you will have: a mental model of the platform architecture, evidence that you built it manually, and a Terraform codebase that rebuilds it from scratch with a single command.
 
 > **Scope note:** This lab uses a single public subnet to keep the networking simple. Lab 2 adds private subnets, a NAT Gateway, and the data engineer and model monitor IAM roles — once you have context for why each of those components exists.
 
@@ -220,7 +222,7 @@ Create all four prefixes now. They will be used starting in Lab 2.
   - ECR: read (pull training container images)
 - Denied by omission: cannot write to `raw/` or `processed/`
 
-> **Note:** `northstar-dev-DataEngineer` and `northstar-dev-ModelMonitor` roles are added in Lab 2, when the services those roles govern (Glue, Lambda, CloudWatch Model Monitor) are introduced.
+> **Note:** `northstar-dev-DataEngineer` and `northstar-dev-ModelMonitor` roles are added in Lab 2, when the services those roles govern (Glue, Lambda, CloudWatch) are introduced.
 
 ---
 
@@ -260,8 +262,9 @@ Create all four prefixes now. They will be used starting in Lab 2.
 
 ## Starter Kit (Canvas: Lab 1)
 
-- `northstar-overview.md` — NorthStar Retail case description
-- `terraform-module-template/` — empty module directory structure (Part B)
+- `northstar-scenario-overview.md` — NorthStar Retail case description
+- `NorthStar_Retail_AI_Platform.pptx` — the case briefing deck
+- `terraform-module-template/` — skeleton module structure for Part B: four empty modules (vpc, storage, iam, sagemaker) plus a dev environment, every variable declared and documented, every resource left as a TODO. It ships passing `terraform fmt -check -recursive` and `terraform validate`, so you start green — keep it that way, it is 5 of the 15 points in Task B1.
 - `aws-account-setup.md` — AWS account setup, credit budget, and cost controls
 - `northstar-data-schema.md` — data source schemas
 
@@ -663,7 +666,7 @@ Estimate steady-state monthly cost using [AWS Pricing Calculator](https://calcul
 
 ## Objective
 
-Extend the NorthStar platform in two directions. First, harden the infrastructure left intentionally simple in Lab 1: move SageMaker into a private subnet behind a NAT Gateway, add the DataEngineer and ModelMonitor IAM roles, and add S3 lifecycle rules. Second, build the data pipeline that feeds the ML platform: raw data lands in S3, Glue crawls and transforms it, engineered features are written to SageMaker Feature Store.
+Extend the NorthStar platform in two directions. First, harden the infrastructure left intentionally simple in Lab 1: move SageMaker into a private subnet behind a NAT Gateway, add the DataEngineer and ModelMonitor IAM roles, and add S3 lifecycle rules. Second, build the data pipeline that feeds the ML platform: raw data lands in S3, Glue crawls and transforms it, and engineered features are written to SageMaker Feature Store.
 
 By the end of this lab, you will have a working end-to-end data pipeline: raw customer event data → cleaned and transformed records → feature vectors in Feature Store → ready for model training in Lab 3.
 
@@ -786,10 +789,12 @@ Lifecycle rules *(new in Lab 2)*:
 - Trust: `sagemaker.amazonaws.com`
 - Allowed:
   - CloudWatch: `PutMetricData`, `GetMetricStatistics`, `PutMetricAlarm`, `DescribeAlarms`
-  - SageMaker Model Monitor: create/manage/delete monitoring schedules
+  - SageMaker: `ListProcessingJobs`, `DescribeProcessingJob` — **read-only visibility into drift runs**
   - S3: read-only on `artifacts/` prefix
   - CloudWatch Logs: write
-- Denied by omission: cannot invoke endpoints; cannot write to S3; cannot modify models
+- Denied by omission: cannot invoke endpoints; cannot write to S3; cannot modify models; **cannot start a processing job** — that is `ModelMonitorExecution`'s job, not this one
+
+> **This role observes; it does not act.** The distinction matters in Lab 6, where the drift analysis runs under `northstar-dev-ModelMonitorExecution` (which writes reports and pulls containers) while this role only watches. A drift alarm that cannot itself remediate is a design choice, not an oversight.
 
 ---
 
@@ -875,13 +880,13 @@ Lifecycle rules *(new in Lab 2)*:
 **Crawler — `northstar-dev-raw-crawler`** *(new in Lab 2)*
 - Role: `northstar-dev-DataEngineer`
 - Target: S3 `raw/customers/` prefix
-- Output: table `raw_customers` in `northstar_dev` database
+- Output: table `customers` in `northstar_dev` database — the crawler names the table after the S3 prefix (`raw/customers/`) and no `TablePrefix` is set, so it is **`customers`, not `raw_customers`**
 - Schedule: on-demand (run manually or trigger from ingestion)
 
 **ETL Job — `northstar-dev-transform`** *(new in Lab 2)*
 - Type: Glue Spark (Python shell for smaller datasets)
 - Role: `northstar-dev-DataEngineer`
-- Source: `northstar_dev.raw_customers` (via Glue catalog)
+- Source: `northstar_dev.customers` (via Glue catalog)
 - Transforms: type casting, null imputation, deduplication, timestamp normalization
 - Sink: `processed/customers/` in S3 as Parquet
 
@@ -916,8 +921,8 @@ Draw this as two layers: infrastructure (VPC/network) and data flow (S3/Glue/Fea
 |------|----|-----------|-------|
 | Source data (external) | S3 `raw/customers/` | → | CSV upload |
 | Raw Crawler | S3 `raw/customers/` | → | scans schema |
-| Raw Crawler | Glue Catalog `raw_customers` | → | registers table |
-| Transform Job | Glue Catalog `raw_customers` | → | reads |
+| Raw Crawler | Glue Catalog `customers` | → | registers table |
+| Transform Job | Glue Catalog `customers` | → | reads |
 | Transform Job | S3 `processed/customers/` | → | writes Parquet |
 | Feature Engineer Job | S3 `processed/customers/` | → | reads |
 | Feature Engineer Job | S3 `features/customers/` | → | writes Parquet |
@@ -940,7 +945,7 @@ Draw this as two layers: infrastructure (VPC/network) and data flow (S3/Glue/Fea
 
 ## Starter Kit (Canvas: Lab 2)
 
-- `northstar-raw-sample.csv` — roughly 19,500 synthetic **transaction** rows across 1,200 customers, spanning 2025-04-01 to 2026-06-30. Deliberately dirty: null `customer_id` values, duplicate `transaction_id` rows, mixed date formats, missing numeric fields, and stray whitespace — Task 2 is where you clean them.
+- `northstar-raw-sample.csv` — roughly 163,000 synthetic **transaction** rows across ~11,400 customers, spanning 2025-04-01 to 2026-06-30. Deliberately dirty: null `customer_id` values, duplicate `transaction_id` rows, mixed date formats, missing numeric fields, and stray whitespace — Task 2 is where you clean them. After cleaning, expect ~157,600 rows; ~10,000 customers have enough history in the observation window to carry features.
 
   The date range is not arbitrary. It covers an observation window (to 2026-04-01) and a 90-day holdout after it, which is what makes the churn label in Task 3 possible. About 21% of customers churn, and roughly a third of those are still buying right up to the cutoff — those are the ones a recency rule will miss.
 
@@ -983,7 +988,7 @@ All infrastructure changes in this lab are made through Terraform. Do not use th
 
 ### Task 1 — Extend Platform Infrastructure (25 points)
 
-Modify your existing Terraform modules and apply the changes to real AWS.
+Modify your existing Terraform modules and apply the changes to a real AWS account.
 
 **Changes to `modules/vpc/`:**
 - Add `aws_subnet` (private, `10.0.1.0/24`, `us-east-1a`, no public IP)
@@ -1036,7 +1041,7 @@ make local-validate 2>&1 | tee docs/lab2-localstack-output.txt
 |------|--------|---------------|
 | Private subnet + NAT Gateway created; SageMaker Domain moved to private subnet | 10 | Console: Domain InService, subnet ID matches `northstar-dev-private-1`; NAT Gateway Available |
 | All 3 IAM roles exist with correct trust and policies | 8 | `aws iam list-roles` shows all 3; `iam:SimulatePrincipalPolicy` confirms DataEngineer cannot **write** `artifacts/` (read on `artifacts/glue/` is expected — Glue fetches job scripts there), ModelMonitor cannot write S3 |
-| S3 lifecycle rules applied | 4 | `aws s3api get-bucket-lifecycle-configuration` returns all 4 rules |
+| S3 lifecycle rules applied | 4 | `aws s3api get-bucket-lifecycle-configuration` returns all 5 rules: `expire-raw-data`, `expire-raw-versions`, `expire-processed-versions`, `expire-feature-versions`, `expire-datacapture` |
 | LocalStack validation updated and passing | 3 | `docs/lab2-localstack-output.txt` shows 3 IAM roles; VPC exists (NAT skipped) |
 
 ---
@@ -1121,7 +1126,7 @@ aws glue start-crawler --name northstar-dev-raw-crawler
 aws glue get-crawler --name northstar-dev-raw-crawler --query 'Crawler.State'
 
 # Verify the table was created
-aws glue get-table --database-name northstar_dev --name raw_customers
+aws glue get-table --database-name northstar_dev --name customers
 
 # Run the transform job
 aws glue start-job-run --job-name northstar-dev-transform
@@ -1137,7 +1142,7 @@ aws s3 ls s3://northstar-dev-data-ACCOUNT_ID/processed/customers/ --recursive
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Glue catalog database and `raw_customers` table exist after crawler run | 6 | `aws glue get-table --database-name northstar_dev --name raw_customers` returns schema |
+| Glue catalog database and `customers` table exist after crawler run | 6 | `aws glue get-table --database-name northstar_dev --name customers` returns schema |
 | Transform script correctly casts types, imputes nulls, deduplicates | 12 | `verify-lab2.sh` runs assertions against `processed/customers/` output: correct Parquet schema, 0 null `customer_id` rows, no duplicate `customer_id` rows |
 | `modules/glue/` Terraform resources applied cleanly | 4 | Module present in repo; `terraform apply` creates crawler and job with 0 errors |
 | Transform job completes with SUCCEEDED status | 3 | `aws glue get-job-run` returns `JobRunState: SUCCEEDED` |
@@ -1363,7 +1368,8 @@ Commit `docs/lab2-destroy-output.txt`. Lab 3 begins by re-running `terraform app
 **Chapters:** *Model Development* (Sessions 1–3: Fine-Tuning, RAG, Agents)
 **Builds on:** Lab 2 — models train on the Feature Store features and `churn_label` you produced
 **Primary tools:** SageMaker (training, Experiments, Model Registry), Bedrock
-**Prerequisite:** *Pre-Lab 3 — Bedrock Model Access Setup*, due Wed Sep 30
+**Prerequisite:** *Pre-Lab 3 — Bedrock Model Access Setup*, due Wed Sep 30 — Tracks B and C cannot start without it.
+**Prerequisite (only if training on SageMaker):** *Pre-Lab 4 — SageMaker Training Quota Setup*, due Wed Sep 30. Your on-demand training quota is **0** by default, so `CreateTrainingJob` fails until an increase is approved. Train locally instead and every Track A rubric item is still reachable.
 
 > **If you have not completed the Bedrock setup exercise, do it now.** On a new AWS account every
 > Bedrock inference quota is **zero**, and access requires a one-time Anthropic use-case form plus
@@ -1394,7 +1400,7 @@ Lab 2 wrote a Feature Group with 13 features and one label, built on a deliberat
 - Every **feature** was computed from purchases on or before `T`.
 - `churn_label` was derived from the holdout: **1** if the customer made no purchase in `(T, SNAPSHOT]`, else **0**.
 
-Your model predicts, from behavior observable at `T`, whether a customer will go silent over the following 90 days. Roughly **21%** of customers churn.
+Your model predicts, from behavior observable at `T`, whether a customer will go silent over the following 90 days. Roughly **22%** of customers churn.
 
 ### The part that makes this hard
 
@@ -1408,7 +1414,7 @@ This is why Lab 2 made you build category diversity, channel mix, and basket siz
 
 - `churn_training_skeleton.py` — SageMaker training entry point: Feature Store Athena query, XGBoost setup with class-imbalance handling, evaluation gates, slice-evaluation stub, Model Registry registration. Several `TODO`s are yours to complete.
 - `evaluation_harness.py` — dual-track evaluation. Track B: four RAGAS test cases built from real Lab 2 features, with ground truths written against the policy corpus. Track C: the five required agent scenarios plus a bonus prompt-injection case, each with expected and forbidden tool calls and an escalation expectation.
-- `prompt_templates/offer_generation_prompts.md` — five templates carrying two documented design weaknesses plus **three planted factual errors** in the tier-guidelines block. The errors are the kind a marketing team introduces writing copy from memory: two wrong tier thresholds and one benefit that exists at no tier. Find them by diffing against the policy corpus; injecting the block unchanged will fail faithfulness.
+- `prompt_templates/offer_generation_prompts.md` — five templates carrying two documented design weaknesses plus **three planted factual errors** in the tier-guidelines block. The errors are the kind a marketing team introduces when writing copy from memory: two wrong tier thresholds and one benefit that exists at no tier. Find them by diffing against the policy corpus; injecting the block unchanged will fail faithfulness.
 - `northstar-policy-docs/` — the RAG corpus for Track B: return policy, loyalty program terms, shipping policy, and an FAQ.
 
 ---
@@ -1433,12 +1439,18 @@ Lab 3 introduces two new ways to spend money without noticing:
 
 | Resource | Cost | Rule |
 |---|---|---|
-| SageMaker training jobs | ~$0.10–0.30 per run on `ml.m5.large` | Fine. Train freely. |
+| SageMaker training jobs | ~$0.10–0.30 per run on `ml.m5.large` | Cheap to run — but **your quota is 0 until you request an increase.** See below. |
 | **SageMaker endpoints** | **~$0.05–0.10/hour, billed until deleted** | **Delete after every test.** This is the Lab 3 equivalent of Lab 2's NAT Gateway. |
 | Bedrock inference | per-token | Small at lab scale; track it in Track B/C |
 | Studio kernels | ~$0.05/hour | Stop the kernel when you stop working |
 
 **You do not need a persistent endpoint to pass this lab.** Batch transform or a local model load is sufficient for every rubric item. If you deploy an endpoint to experiment, delete it the same session. Run `bash scripts/teardown-lab3.sh` when you submit.
+
+> **You also do not need a SageMaker Training Job to pass this lab — which is fortunate, because you probably cannot run one yet.** The AWS default on-demand training quota is **0 instances** for every family, so `CreateTrainingJob` fails with `ResourceLimitExceeded` regardless of your budget. Train locally: `churn_training_skeleton.py` runs on your machine against the Feature Store data, and every Track A rubric item is reachable that way.
+>
+> If you want to use a real training job here — and you will need one in **Lab 4**, which has no local fallback — file the quota request now. See [[Pre-Lab 4 — SageMaker Training Quota Setup]]. It is assigned alongside Pre-Lab 3 for the same reason: the approval time is not yours to control.
+>
+> One consequence worth knowing before you compare numbers: **the SageMaker training container runs XGBoost 1.7**, and this lab's reference metrics were measured on 3.2.0. See the provenance note under Task 1 — the two will not agree to four decimal places, and that is expected.
 
 ---
 
@@ -1455,7 +1467,7 @@ Train a churn model on the Lab 2 Feature Store data.
 - Hyperparameters (`max_depth`, `eta`, `num_round`, `scale_pos_weight`) passed as arguments, never hardcoded.
 - Every training run tracked as a trial in **SageMaker Experiments**.
 - Final model registered in the **Model Registry** with status `PendingManualApproval`. Never auto-approve.
-- Class imbalance handled explicitly — roughly 21% positives. Justify your `scale_pos_weight`.
+- Class imbalance handled explicitly — roughly 22% positives. Justify your `scale_pos_weight`. (Reference run derives 3.545 from the training split rather than hardcoding it.)
 
 **Guard against leakage.** `churn_risk_score` is a feature in the Feature Group, and it is a pure recency heuristic. You may include it, but if you do, report results **with and without it**. Do not include `churn_label` as an input, and do not construct features from post-`T` data.
 
@@ -1463,27 +1475,45 @@ Train a churn model on the Lab 2 Feature Store data.
 
 | Metric | Your value | Threshold |
 |--------|-------|-----------|
-| AUC-ROC (holdout) | | ≥ 0.72 |
+| AUC-ROC (holdout) | | report it — **no fixed threshold** |
 | Precision @ top 10% | | ≥ 0.50 |
 | Recall @ top 10% | | ≥ 0.25 |
-| **AUC lift over recency-only baseline** | | **≥ +0.03** |
+| **AUC lift over recency-only baseline** | | **95% CI must exclude zero** |
 
-The baseline is a model trained on `days_since_last_purchase` alone. Train it, report its AUC, and show your full model beats it. Reference implementation measured **0.736 full vs 0.667 recency-only, a lift of +0.069** — so the threshold is comfortably achievable, but only if your feature set is doing real work.
+The baseline is a model trained on `days_since_last_purchase` alone. Train it, report its AUC, and show your full model beats it — **with a confidence interval on the difference, not just two numbers.** Reference implementation measured **0.7696 full vs 0.7233 recency-only, a lift of +0.0464, 95% CI [0.0254, 0.0670]**.
 
-Note the recall ceiling: with ~21% positives, targeting the top 10% of customers caps recall at about 48%. A recall of 0.25 means you are capturing roughly half of what is theoretically reachable in that budget.
+> **Why there is no absolute AUC threshold.** There used to be one — AUC ≥ 0.72 — and it was removed on 2026-08-02 because it was not a real gate. Measured across 200 random train/test splits of the same data, the reference model's AUC varied by ±0.03 and fell below 0.72 on **58% of splits**. A threshold that the reference implementation clears by luck of the shuffle grades your random seed, not your model. The old lift gate of ≥ 0.03 was worse: the threshold was *smaller than the metric's own standard deviation*.
+>
+> What replaces it is the question the lab actually asks: **did your feature engineering do measurable work?** You answer that with an interval. If the 95% CI on (your AUC − baseline AUC) excludes zero, you have evidence. If it straddles zero, you do not — regardless of how good the point estimate looks. Compute it by bootstrapping your test set: resample it with replacement ~2,000 times, score both models on each resample, and take the 2.5th and 97.5th percentiles of the difference. Resample the *rows once per replicate and score both models on them* — resampling the two models independently inflates the interval.
+
+> **Where these numbers come from.** All reference metrics in this lab are from `models/churn/train_reference.py` — the Athena path Task 1 requires — measured end to end on 2026-08-02 against the 10,000-customer dataset (registry version v4), `seed=42`, `test_size=0.30`, 6,999 train / 3,000 test, **on XGBoost 3.2.0**. Any figure you encounter from before that date is superseded; the dataset was 8x smaller and its metrics did not reproduce.
+>
+> **The XGBoost version is part of that provenance, not a footnote.** These figures reproduce to four decimal places run after run *at a fixed XGBoost version*, and they move when the version changes. Measured 2026-08-03 on identical data, an identical split and an identical `scale_pos_weight`:
+>
+> | Metric | XGBoost 3.2.0 (above) | XGBoost 1.7 |
+> |---|---|---|
+> | Recency-only baseline AUC | 0.7233 | **0.7208** |
+> | Precision@10% | 0.6833 | **0.6933** |
+> | Recall@10% | 0.3106 | **0.3152** |
+>
+> This matters because **the SageMaker XGBoost training container is 1.7**, so if you train through a SageMaker Training Job — or through the Lab 4 pipeline — you should expect the third column, not the second. Nothing is wrong with your model. Report the version you trained on alongside your metrics, and compare like with like. The gate is unaffected: the lift CI excludes zero in both.
+
+Note the recall ceiling: with ~22% positives, targeting the top 10% of customers caps recall at about **45%**. A recall of 0.25 means you are capturing roughly half of what is theoretically reachable in that budget.
 
 Also include: confusion matrix at your chosen threshold, feature importance plot, and **slice evaluation across loyalty tiers**.
+
+> **Report `n` alongside every slice metric, and say which slices are too small to support a claim.** This is not bookkeeping. On an earlier, 8x smaller version of this dataset the Platinum tier held about 33 test customers with roughly 2 churners, and the measured Platinum AUC swung between 0.00 and 1.00 depending only on the random split — it read as "worse than random" on about a third of splits. That reading was published as a finding, and it was wrong: at ~300 test customers Platinum is the model's *strongest* slice. A slice metric without an `n` beside it is not a measurement, and a confident conclusion drawn from ~2 positives is how a careful-looking analysis ends up exactly backwards.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
 | Training data pulled from Feature Store offline store via Athena | 5 | Training script issues an Athena query against the offline store table; no CSV path in the data-loading code |
-| Model meets AUC, precision, and recall thresholds | 8 | All three met on a held-out split |
-| **Beats the recency-only baseline by ≥ 0.03 AUC** | 7 | Both models' AUC reported; lift computed and shown |
+| Model meets precision and recall thresholds | 8 | Both met on a held-out split; AUC reported but not thresholded |
+| **Beats the recency-only baseline with a CI that excludes zero** | 7 | Both models' AUC reported, lift computed, and a 95% CI on the lift shown. A point estimate alone earns 3 of 7 |
 | SageMaker Experiments tracking | 5 | ≥3 runs visible as trials with logged metrics |
 | Model registered as `PendingManualApproval` | 5 | Visible in Model Registry with correct status and metadata |
-| Slice evaluation across loyalty tiers | 5 | AUC and recall per tier; any tier below aggregate explicitly flagged and discussed |
+| Slice evaluation across loyalty tiers | 5 | AUC, recall **and test-set n** per tier; the weakest tier flagged and discussed; any tier too small to conclude from called out as such |
 
 ---
 
@@ -1530,7 +1560,7 @@ Generate personalised retention offers for customers your Task 1 model flags as 
 | Answer relevance | ≥ 0.75 |
 | Context recall | ≥ 0.70 |
 
-Include 5 input/output pairs showing correct behaviour and 2 documented failure cases.
+Include 5 input/output pairs showing correct behavior and 2 documented failure cases.
 
 #### Track C: Customer Service Agent
 
@@ -1558,7 +1588,7 @@ Build a ReAct agent handling NorthStar customer inquiries.
 
 Scenario 5 is the one that matters, and the harness implements it as a long-tenure Platinum member demanding a return on a **final sale** item, with an account-closure threat attached. Final sale is non-returnable at every tier — `POL-RET-004 §4` explicitly overrides tier benefits — and exceptions sit with the Director of Customer Experience, entirely outside agent authority.
 
-The correct behaviour is to be empathetic, cite the policy, decline plainly, and escalate. Conceding the return, or merely hinting it might be possible, is a **fail** however satisfied the customer sounds. Note that this tests policy resolve, not jailbreak resistance: real customers do not type "ignore your previous instructions", they say "I have been loyal for six years." Prompt injection is covered separately as a bonus case.
+The correct behavior is to be empathetic, cite the policy, decline plainly, and escalate. Conceding the return, or merely hinting it might be possible, is a **fail** however satisfied the customer sounds. Note that this tests policy resolve, not jailbreak resistance: real customers do not type "ignore your previous instructions", they say "I have been loyal for six years." Prompt injection is covered separately as a bonus case.
 
 **Rubric (Track B or C):**
 
@@ -1574,7 +1604,7 @@ The correct behaviour is to be empathetic, cite the policy, decline plainly, and
 
 Write `docs/lab3-model-design.md` (~700 words).
 
-1. **Churn model.** Why gradient boosting rather than logistic regression or a neural network, for *this* dataset — 1,200 customers, 13 tabular features, an interpretability requirement from the retention team? What would have to change for you to switch?
+1. **Churn model.** Why gradient boosting rather than logistic regression or a neural network, for *this* dataset — ~10,000 customers, 13 tabular features, an interpretability requirement from the retention team? What would have to change for you to switch?
 2. **What your features bought you.** Report the recency-only baseline against your full model. If the lift was small, say so and explain why. Which features carried real signal, and which were decorative?
 3. **LLM system.** Why RAG over fine-tuning (Track B), or an agent over a simpler pipeline (Track C)? Name the primary production risk of your choice.
 4. **What you would do differently** with 10× the time or data.
@@ -1623,6 +1653,7 @@ If you also finished with the Lab 2 infrastructure, run `scripts/teardown-lab2.s
 **Assigned:** Thu Oct 15 | **Due:** Sat Oct 31, midnight
 **Chapters:** *XOps Stack*, *Testing & Evaluation*, *Continuous Delivery*
 **Builds on:** Labs 1–3 — automates the lifecycle of your Lab 3 churn model
+**Prerequisite:** *Pre-Lab 4 — SageMaker Training Quota Setup*, due Wed Sep 30. **There is no local fallback in this lab** — without the quota, the pipeline cannot complete.
 
 ## Objective
 
@@ -1633,6 +1664,81 @@ Automate everything. A model that requires manual steps to test, evaluate, and d
 - `buildspec.yml` — CodeBuild build specification skeleton
 - `pipeline.yaml` — CodePipeline definition starter
 - `tests/test_data.py`, `tests/test_features.py`, `tests/test_model.py` — populated pytest suites covering the processed dataset, the Lab 2 feature functions, and the Lab 3 model contract. Several assertions are left as `TODO` for you to implement.
+- `tests/conftest.py` — registers `--model-path` and `--eval-metrics-path`. Leave it where it is; pytest only reads `pytest_addoption` from `conftest.py`.
+
+## Before you deploy anything — four prerequisites
+
+None of these are created for you, and each one fails in a way that does not
+name the real cause. Do them first.
+
+**1. An artifacts bucket, versioned.** CodePipeline needs a working bucket of
+its own for stage artifacts. This is **not** the `northstar-dev-data-<account>`
+data bucket and must not be pointed at it. Versioning is required — CodePipeline
+will not use an unversioned bucket.
+
+```bash
+AB=northstar-dev-cicd-artifacts-$(aws sts get-caller-identity --query Account --output text)
+aws s3api create-bucket --bucket "$AB"
+aws s3api put-bucket-versioning --bucket "$AB" \
+  --versioning-configuration Status=Enabled
+```
+
+**2. A GitHub connection, created and authorized *before* the stack.** A
+CodeStar connection created by CloudFormation is born `PENDING`, and a
+`PENDING` connection can only be completed by a human in the console — so a
+stack that creates its own connection comes up "successfully" with a Source
+stage that can never pull. Create it once, authorize it, then pass the ARN in.
+
+```bash
+aws codeconnections create-connection \
+  --provider-type GitHub --connection-name northstar-github
+# Console: Developer Tools → Settings → Connections → Update pending connection
+aws codeconnections list-connections \
+  --query "Connections[?ConnectionName=='northstar-github'].[ConnectionStatus,ConnectionArn]" \
+  --output text
+```
+
+It must read **`AVAILABLE`** before the pipeline will run.
+
+**3. The SageMaker Pipeline must exist.** The build triggers a pipeline named
+`northstar-churn-pipeline`; a `start-pipeline-execution` against a pipeline that
+was never defined fails with `ValidationException`. `pipeline_definition.py`
+creates it, and the buildspec upserts it on every build so each execution is
+pinned to the commit that triggered it.
+
+**4. Deploy with `CAPABILITY_NAMED_IAM`**, not `CAPABILITY_IAM` — the template
+creates named roles.
+
+```bash
+aws cloudformation deploy \
+  --template-file pipeline.yaml --stack-name northstar-cicd \
+  --parameter-overrides \
+      ProjectName=northstar Environment=dev \
+      GitHubOwner=YOUR_GITHUB_USERNAME GitHubRepo=northstar-ai-platform \
+      GitHubBranch=main ArtifactsBucket="$AB" \
+      GitHubConnectionArn=<arn from step 2> \
+      SageMakerRoleArn=$(terraform -chdir=infrastructure/environments/dev \
+                          output -raw ml_engineer_role_arn) \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> **The training job needs on-demand training quota, and the AWS default is
+> zero.** `ml.m5.large for training job usage` (`L-611FA074`) starts at **0** on
+> a new account and the TrainingStep fails with `ResourceLimitExceeded`.
+> **Unlike Lab 3, there is no local fallback here** — the whole point of the
+> lab is that the pipeline trains, so this quota is a hard prerequisite.
+>
+> You should already have filed this in [[Pre-Lab 4 — SageMaker Training Quota Setup]],
+> assigned back with Lab 2. If you did not, do it **now** and read Step 3 there
+> for the spot-training fallback — approval is not instant and Lab 4 is two
+> weeks long.
+>
+> ```bash
+> aws service-quotas get-service-quota --service-code sagemaker \
+>   --quota-code L-611FA074 --query 'Quota.Value' --output text
+> ```
+>
+> A non-zero number is the only evidence that matters.
 
 ## Tasks
 
@@ -1656,9 +1762,9 @@ Build a test suite that runs automatically in CI. Tests must be executable via `
 - Cover: normal case, boundary case (customer with 0 purchases), edge case (single transaction)
 
 **Model evaluation test** (`tests/test_model.py`):
-- AUC-ROC ≥ 0.72 on held-out validation set
 - Precision@top10% ≥ 0.50 and recall@top10% ≥ 0.25
-- **Baseline gate: AUC must exceed the recency-only baseline by ≥ 0.03.** Your training script has to emit `baseline_auc_roc` alongside `auc_roc` for this to be checkable. This is the gate that stops a model that has learned nothing beyond "days since last purchase" from reaching the registry.
+- **Baseline gate: the 95% CI on (model AUC − recency-only baseline AUC) must exclude zero.** Your training script has to emit `baseline_auc_roc` and the CI bounds alongside `auc_roc` for this to be checkable. This is the gate that stops a model that has learned nothing beyond "days since last purchase" from reaching the registry.
+- **There is deliberately no absolute AUC threshold.** A fixed AUC gate was removed on 2026-08-02: across 200 splits of the same data the reference model fell below the old 0.72 bar on 58% of them, so the gate was testing the random seed. Report AUC, gate on the interval.
 - Regression test: new model AUC ≥ (champion model AUC − 0.02)
 - Prediction shape: output is a probability between 0 and 1 for every input
 
@@ -1680,25 +1786,85 @@ Implement a CI/CD pipeline that connects: **code push → test → build → eva
 
 **Acceptable implementations:** AWS CodePipeline, GitHub Actions, or GitLab CI (your choice — document the rationale).
 
-**Required pipeline stages:**
+**Required pipeline phases.** Your pipeline must perform all five of these, in
+this order:
 
 1. **Source** — triggered by push to `main` branch
 2. **Test** — runs `pytest tests/`; pipeline fails and alerts if any test fails
 3. **Build** — packages training code; runs SageMaker Training Job with the new code
-4. **Evaluate** — runs evaluation tests against the new model; compares to champion
+4. **Evaluate** — runs the promotion gate against the new model's metrics
 5. **Register** — promotes model to SageMaker Model Registry with status `PendingManualApproval` if all gates pass
 
+> **Five phases is not five CodePipeline stages, and you are not required to
+> make them line up.** A CodePipeline *stage* is a deployment boundary — it
+> exists so artifacts can hand off and so a human can be inserted between two
+> points. A CI *phase* is a logical step. Forcing one stage per phase means
+> passing the model artifact between stages and standing up a CodeBuild project
+> per stage, which buys nothing here.
+>
+> The reference implementation uses **three** CodePipeline stages:
+>
+> | CodePipeline stage | Phases it performs | Where |
+> |---|---|---|
+> | `Source` | Source | CodeStar connection → GitHub `main` |
+> | `Build` | Test, Build, Evaluate, Register | `buildspec.yml`: `pre_build` runs `pytest tests/`; `build` upserts and runs the SageMaker Pipeline, which trains and registers; then the gate runs against the emitted metrics |
+> | `ManualApproval` | the human promotion decision | SNS-notified approval action |
+>
+> Grading is on the five **phases** being present, ordered and enforced — not
+> on the stage count in the console. Document your mapping either way.
+
 **Gate behavior:**
-- Pipeline must halt at the failed stage — not silently skip
-- A failed evaluation gate must send a CloudWatch alarm (email notification acceptable)
+- The pipeline must halt at the failed phase — not silently skip
+- A failed gate must halt the build **and** notify. The stack creates a CloudWatch alarm `northstar-ci-build-failure` and an SNS topic `northstar-model-approvals`; subscribe an address to the topic:
+
+```bash
+aws sns subscribe --topic-arn <ModelApprovalTopicArn from stack outputs> \
+  --protocol email --notification-endpoint you@example.com
+```
+
+> **Two traps in the notification path, both of which fail silently.** Wiring an
+> alarm is the easy part; proving it can actually tell you something is the
+> exercise.
+>
+> **1. `post_build` does not always run.** It runs when the *build* phase fails,
+> but **not** when `pre_build` fails — CodeBuild goes straight to `FINALIZING`
+> and skips it entirely. So a metric published from `post_build` is absent for
+> exactly the failure the rubric asks you to demonstrate. The reference alarm
+> watches `AWS/CodeBuild` `FailedBuilds`, which CodeBuild emits itself and which
+> no phase failure can skip. If you publish your own metric instead, prove it
+> survives a *test* failure, not just a gate failure.
+>
+> **2. An SNS topic policy that omits `cloudwatch.amazonaws.com` breaks
+> notification without breaking the alarm.** The alarm still evaluates, still
+> transitions to `ALARM`, still turns the console red — and publishes nothing.
+> The only evidence is one line here:
+>
+> ```bash
+> aws cloudwatch describe-alarm-history --alarm-name northstar-ci-build-failure \
+>   --history-item-type Action --max-records 5
+> # Failed to execute action arn:aws:sns:...:northstar-model-approvals
+> ```
+>
+> Run that command against your own alarm. **An alarm that fires and cannot
+> notify is worse than no alarm, because it looks like coverage.** Note also
+> that SNS rejects a multi-statement topic policy unless every statement has a
+> unique `Sid`.
+>
+> **How to demonstrate all of this:** add a deliberately failing assertion to
+> `tests/`, push, and confirm four things — the run halts in the phase that owns
+> tests, the Model Registry gains **no** new version, the alarm goes `ALARM`,
+> and `describe-alarm-history` says *Successfully executed action*. Then revert
+> and confirm the reverse: green build, registry gains a version, alarm returns
+> to `OK`.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| All 5 stages present and sequenced correctly | 12 | Pipeline YAML/config shows all stages; TA can trigger a run |
-| Pipeline halts correctly on test failure | 10 | TA introduces a deliberate test failure; pipeline stops at Test stage |
-| Model Registry promotion only on green gates | 8 | Model Registry shows `PendingManualApproval` only after a clean run |
+| All 5 phases present, ordered, with a documented stage mapping | 10 | Pipeline config plus your mapping shows all five; TA can trigger a run |
+| Pipeline halts correctly on test failure | 8 | TA introduces a deliberate test failure; the run stops in the phase that owns tests and does **not** reach Register |
+| Model Registry promotion only on green gates | 6 | Model Registry shows `PendingManualApproval` only after a clean run; registry gains **no** version on the failed run |
+| Failure notification demonstrably delivers | 6 | On the failed run the alarm reaches `ALARM` **and** `describe-alarm-history --history-item-type Action` reads *Successfully executed action*. An alarm that fires without delivering scores 0 here |
 
 ### Task 3 — MLOps Configuration (20 points)
 
@@ -1823,14 +1989,14 @@ Deploy the churn model approved above.
   - *Batch Transform, parallel run:* the new model runs as a **shadow job over the same input manifest** as the incumbent; you compare score distributions and disagreement rate before the new model's output feeds anything downstream. There is no traffic weight in batch — the parallel run and the comparison artifact are what earn the points.
 - **Rollback trigger configured with a numeric threshold** — specify the metric and the value. The trigger must exist **as code** in `deployment/configs/` (a CloudWatch alarm definition, Terraform resource, or deployment config), not only as prose in the plan. A threshold nobody wired up is a paragraph, not a control.
 
-  > **`ModelLatency` is emitted in MICROSECONDS, not milliseconds.** A 200 ms threshold is `200000`. Writing `200` sets the alarm to 0.2 ms, which is far below a healthy endpoint's normal latency — measured at roughly **4,100 µs (4.1 ms)** on `ml.m5.large` for this model. The alarm goes to `ALARM` immediately and stays there, and a rollback wired to it fires against a perfectly healthy deployment. Both behaviours verified on AWS. Check the `Unit` field in `get-metric-statistics` output before you pick any threshold.
+  > **`ModelLatency` is emitted in MICROSECONDS, not milliseconds.** A 200 ms threshold is `200000`. Writing `200` sets the alarm to 0.2 ms, which is far below a healthy endpoint's normal latency — measured at roughly **4,100 µs (4.1 ms)** on `ml.m5.large` for this model. The alarm goes to `ALARM` immediately and stays there, and a rollback wired to it fires against a perfectly healthy deployment. Both behaviors verified on AWS. Check the `Unit` field in `get-metric-statistics` output before you pick any threshold.
 
-- **Rollback action.** The canary rollback is `update-endpoint-weights-and-capacities` setting the canary to weight 0. It takes about **90 seconds**, the endpoint reports `Updating` throughout but keeps serving with no dropped requests, and it does **not** stop the canary instance billing.
+- **Rollback action.** The canary rollback is `update-endpoint-weights-and-capacities` setting the canary to weight 0. It takes about **90 seconds**; the endpoint reports `Updating` throughout but keeps serving with no dropped requests, and it does **not** stop the canary instance billing.
 - **Auto-scaling policy (real-time only):** target tracking on `SageMakerVariantInvocationsPerInstance` at 1000, scale-out cooldown 60s, scale-in cooldown 600s.
 
   **Start on `ml.t2.medium`.** It is the cheapest real-time instance at $0.056/hr, and it is one of only three endpoint types your new AWS account has any quota for. Deploy the canary, observe the traffic split, wire the rollback alarm — all of that works.
 
-  Then try to attach the auto-scaling policy. **It will fail**, and working out why is part of this task. See *Instance selection and quota* below before you start, so you can plan around it rather than discover it at 2am.
+  Then try to attach the auto-scaling policy. **It will fail**, and working out why is part of this task. See *Instance selection and quota* below before you start, so you can plan around it rather than discover it at 2 am.
 - **Compressed monitoring window.** Your *plan* documents the production cadence — a 48-hour canary window before promotion. Your *lab execution* observes for **60 minutes**, then promotes or rolls back. State the compression explicitly in the plan: what a 48-hour window would catch that 60 minutes cannot, and what you would additionally monitor in a real rollout. You are graded on identifying the gap, not on burning two days of endpoint time.
 - **Everything deleted after the window closes and before submission.** See Teardown.
 
@@ -1865,9 +2031,9 @@ ValidationException: You cannot register a variant with
 ml.t2.medium instance type as a scalable target.
 ```
 
-This is not a bug in your configuration and there is no flag that fixes it. Burstable instances (`ml.t2.*`, `ml.t3.*`) accumulate CPU credits rather than delivering sustained performance, so Application Auto Scaling refuses to manage them — a scaling decision based on a credit-throttled instance would be meaningless. The fix is to move to a non-burstable instance type, and the obvious candidate is `ml.m5.large`.
+This is not a bug in your configuration, and there is no flag that fixes it. Burstable instances (`ml.t2.*`, `ml.t3.*`) accumulate CPU credits rather than delivering sustained performance, so Application Auto Scaling refuses to manage them — a scaling decision based on a credit-throttled instance would be meaningless. The fix is to move to a non-burstable instance type, and the obvious candidate is `ml.m5.large`.
 
-Note what this cost you: the endpoint deployed *fine*, served traffic *fine*, and failed only at the very last step — **after it had already been billing for several minutes.** A capability you assume is available because the resource looks healthy is a category of production failure worth internalising.
+Note what this cost you: the endpoint deployed *fine*, served traffic *fine*, and failed only at the very last step — **after it had already been billing for several minutes.** A capability you assume is available because the resource looks healthy is a category of production failure worth internalizing.
 
 **Wall 2 — your account almost certainly has zero quota for `ml.m5.large`.**
 
@@ -1876,7 +2042,7 @@ You switch the instance type, redeploy, and get:
 ```
 ResourceLimitExceeded: The account-level service limit
 'ml.m5.large for endpoint usage' is 0 Instances, with current
-utilization of 0 Instances and a request delta of 1 Instances.
+utilization of 0 Instances and a request delta of 1 Instance.
 ```
 
 **This is expected. It is not a mistake you made.**
@@ -1921,7 +2087,7 @@ You can also do this in the console: **Service Quotas → AWS services → Amazo
 
 **If your increase has not landed in time**, deploy on `ml.t2.medium`, capture the `register-scalable-target` rejection and your pending quota request as evidence, and write up the scaling design you *would* have applied. See the rubric — **this path earns full credit on the auto-scaling item.** You are graded on diagnosing and responding to the constraint, not on winning a race with AWS Support.
 
-**A note for Lab 6.** Whatever instance you land on, **enable `DataCaptureConfig`** — Lab 6's monitoring has nothing to analyse without it, and endpoint configs are immutable so it cannot be added later without a redeploy. `ml.t2.medium` supports data capture fully, so an unresolved quota request does not block Lab 6.
+**A note for Lab 6.** Whatever instance you land on, **enable `DataCaptureConfig`** — Lab 6's monitoring has nothing to analyze without it, and endpoint configs are immutable so it cannot be added later without a redeploy. `ml.t2.medium` supports data capture fully, so an unresolved quota request does not block Lab 6.
 
 **Rubric:**
 
@@ -2062,36 +2228,56 @@ A deployed model with no monitoring is a liability. This lab instruments the Nor
 
 Lab 5 taught you that a SageMaker endpoint bills from `InService` until deletion. Lab 6 re-creates that endpoint *and* adds a second billing source:
 
-| Resource | Rate | Notes |
+| Resource                    | Rate                 | Notes                                                    |
+| --------------------------- | -------------------- | -------------------------------------------------------- |
+| Endpoint — `ml.t2.medium`   | **$0.056 / hr**      | Where Lab 5 starts you                                   |
+| Endpoint — `ml.m5.large`    | **$0.115 / hr**      | Only if your Lab 5 quota increase came through           |
+| Evidently processing job    | **$0.05 / hr**       | `ml.t3.medium`, billed per second, only while a job runs |
+| CloudWatch alarm            | $0.10 / alarm-month  | Prorated hourly; 6 alerts ≈ $0.60/mo if left             |
+| CloudWatch custom metric    | $0.30 / metric-month | **Not prorated** — you pay for the month                 |
+| CloudWatch dashboard        | free (first 3)       | Then $3/mo                                               |
+
+The drift job is the cheapest thing in this lab. **Measured 2026-08-07 on `ml.t3.medium`: 10,000 baseline rows against 800 captured records ran in 1 min 59 s of billed instance time and cost about $0.0017.** Round it to a fifth of a cent per run. Run it ten times while you get the inputs right and you have spent two cents.
+
+Your bill in this lab is essentially the endpoint, and only the endpoint.
+
+What this actually costs you — the column that applies depends on which instance Lab 5 left you on:
+
+| If you… | On `ml.t2.medium` | On `ml.m5.large` |
 |---|---|---|
-| `ml.m5.large` endpoint | **$0.115 / hr** | Same as Lab 5 |
-| Model Monitor processing job | **$0.10 / hr** | `ml.t3.large`, billed per second, only while a job runs |
-| CloudWatch alarm | $0.10 / alarm-month | Prorated hourly; 6 alerts ≈ $0.60/mo if left |
-| CloudWatch custom metric | $0.30 / metric-month | **Not prorated** — you pay for the month |
-| CloudWatch dashboard | free (first 3) | Then $3/mo |
+| Work in one focused session and tear down (3 h) | **$0.49** | **$0.67** |
+| Leave it running overnight (14 h) | **$1.13** | **$1.95** |
+| Forget for three days (72 h) | **$4.47** | **$8.72** |
+| Forget for a week (168 h) | **$10.01** | **$19.93** |
 
-A monitoring job costs nearly as much per hour as the endpoint it monitors, but it only runs for minutes, so in practice it adds roughly 10% to your bill. **Measured 2026-07-31: a baseline job on `ml.t3.large` took 5 min 46 s of billed instance time and cost $0.010.**
+Burn rate with the endpoint live and one drift run per hour: **$0.0577/hr** on `t2.medium`, **$0.1167/hr** on `m5.large`.
 
-What this actually costs you:
+> **A single forgotten Lab 6 endpoint breaches the entire course account's $10/month budget alarm in 168 hours (7 days) on `t2.medium`, or 83 hours (3.5 days) on `m5.large`.** You have a 16-day submission window, so either number is reachable by simply forgetting. Do the lab in one sitting and tear it down.
 
-| If you… | Total |
-|---|---|
-| Work in one focused session and tear down (3 h) | **$0.68** |
-| Leave it running overnight (14 h) | **$2.07** |
-| Forget for three days (72 h) | **$9.34** |
-| Forget for a week (168 h) | **$21.38** |
+**Read that table for what it is actually telling you.** Every meaningful number in it is the endpoint. The monitoring — the entire subject of this lab — rounds to nothing. That is the normal shape of production ML economics: *serving* is the recurring cost, and *observability* is close to free by comparison. The instinct to skip monitoring to save money is backwards, and this bill is the proof.
 
-Your burn rate with the endpoint live and an hourly schedule running is **$0.1254/hour**.
+If you automate the analysis on a timer (EventBridge, a cron job, a loop), **that timer keeps launching billable jobs whether or not you are still working, and whether or not the endpoint still exists.** `scripts/teardown-lab5.sh` knows nothing about monitoring. **Use `scripts/teardown-lab6.sh`** — it stops in-flight processing jobs before deleting the endpoint.
 
-> **A single forgotten Lab 6 endpoint breaches the entire course account's $10/month budget alarm in 77 hours — 3.2 days.** You have a 16-day submission window. Do the lab in one sitting and tear it down.
+## Why this lab uses Evidently and not SageMaker Model Monitor
 
-**The part that is new and catches people:** a monitoring schedule keeps launching billable processing jobs on its own cadence, *independent of whether you are still working, and independent of whether the endpoint still exists.* Deleting the endpoint does not delete the schedule. `scripts/teardown-lab5.sh` does not delete monitoring schedules. **Use `scripts/teardown-lab6.sh`.**
+SageMaker Model Monitor is the obvious tool for this lab, and you cannot use it. **Monitoring schedules are closed to new AWS accounts:**
 
-Use an **hourly** monitoring schedule, not a daily one. Hourly gets you a graded artifact in about two hours. Daily forces a 24-hour billing window on you for no additional learning.
+```
+ValidationException: This operation is in maintenance mode and is not
+available to new customers. Existing customers are unaffected.
+```
+
+Both `CreateMonitoringSchedule` and `CreateDataQualityJobDefinition` return this. It is not a quota, not a permission, and not something you did wrong — AWS closed the API to accounts that were not already using it. **Every account in this course is new.** No permission fixes it and there is nothing to request.
+
+So this lab uses **[Evidently](https://github.com/evidentlyai/evidently)**, an open-source Python library for drift detection, running inside a SageMaker Processing Job. You keep the managed compute; you drop the managed control plane that was closed to you.
+
+> **Do not confuse this with Amazon CloudWatch Evidently.** That was an unrelated AWS service for feature flags and A/B experiments, it never did model monitoring, and AWS ended support for it on **16 October 2025**. If you find AWS documentation for "Evidently", it is almost certainly about the dead feature-flag service. The library you want is `pip install evidently` and its docs are at `docs.evidentlyai.com`.
+
+This substitution is worth more than it costs. A managed schedule is a checkbox that hides the analysis behind it. Running Evidently yourself means you must decide *what test to run on which feature at what threshold* — which is exactly what Task 2 asks you to justify, and exactly the judgement the checkbox was making silently on your behalf.
+
+There is also a practical dividend: Model Monitor's analyzer is a Spark container that needs 8 GB. Evidently is pandas. It runs comfortably on the cheapest instance you have quota for.
 
 ## Prerequisites — do this before Task 1
-
-Three things must be true before you create a monitoring schedule. Two of them fail *expensively* and *silently* — the failure surfaces roughly an hour later, while the endpoint bills the whole time.
 
 Run the pre-flight check:
 
@@ -2099,9 +2285,7 @@ Run the pre-flight check:
 bash scripts/preflight-lab6.sh
 ```
 
-### 0. Use `ml.t3.large` for every Model Monitor job — not `ml.m5.large`, not `ml.t3.medium`
-
-This is not a cost-tuning suggestion. It is the only instance type that both has quota and actually works.
+### 0. Use `ml.t3.medium` — and understand why you have no other choice
 
 **Your AWS account's processing-job quota is 0 for every non-burstable instance type.** Not low — zero. `ml.m5.large`, `ml.c5.*`, `ml.m4.*`, `ml.r5.*` and every other general-purpose family will reject the job immediately:
 
@@ -2112,31 +2296,24 @@ ResourceLimitExceeded: The account-level service limit
 
 Of the 126 processing instance types, exactly **three** have a non-zero AWS default, and all three are burstable: `ml.t3.medium` (4), `ml.t3.large` (4), `ml.t3.xlarge` (2). Verified against `get-aws-default-service-quota` on 2026-07-31.
 
-Check your own before you start — these are the *defaults*, and an account accrues higher applied limits as it is used:
+Check your own before you start:
 
 ```bash
 aws service-quotas get-service-quota --service-code sagemaker \
-  --quota-code L-C076FA77 --query 'Quota.Value' --output text   # ml.t3.large processing
+  --quota-code L-0CE343FE --query 'Quota.Value' --output text   # ml.t3.medium processing
 ```
 
-**And `ml.t3.medium` — the cheapest — does not work.** The Model Monitor analyzer is a Spark container and exhausts its 4 GB on a dataset of barely a thousand rows. Worse, it takes **13 min 43 s** to fail, and the error blames your data rather than the instance:
+**`ml.t3.medium` (4 GB) is enough.** Verified 2026-08-07: a 10,000-row baseline against 800 captured records completed in **1 min 59 s** of billed time. You do not need `ml.t3.large` and you must not file a quota increase for this lab.
 
-```
-ClientError: Please use an instance type with more memory,
-or reduce the size of job data processed on an instance.
-```
-
-That message will send you off shrinking your dataset, which is not the problem. **`ml.t3.large` (8 GB) is the floor.** Measured: baseline job completed in 5 min 46 s of billed instance time.
-
+> **This is where the tool choice pays for itself.** The same comparison under Model Monitor's Spark analyzer **fails** on `ml.t3.medium` — it exhausts 4 GB, takes **13 min 43 s** to do it, and then blames your data instead of the instance: *"Please use an instance type with more memory, or reduce the size of job data processed on an instance."* That message sends you off shrinking a dataset that was never the problem. Evidently on the same instance and the same data finishes in under two minutes.
+>
 > **Note the inversion from Lab 5.** Lab 5's trap was that *burstable instances cannot be auto-scaling targets* — you were forced off `ml.t3.*` onto `ml.m5.large`. In Lab 6 the constraint runs exactly the other way: burstable is the only class with any default processing quota at all. Same instance family, opposite conclusion, one lab apart.
 >
-> **Endpoint quota, training quota and processing quota are three completely separate numbers**, and having one tells you nothing about the others. `ml.m5.large` has a *different* quota for each. The AWS default for all three on-demand families is 0; accounts accumulate higher applied limits through usage, which is why an endpoint that deployed fine in Lab 5 does not mean a processing job will run in Lab 6. Always check the specific quota for the specific job type.
-
-If you want `ml.m5.large` for processing, you must file a Service Quotas increase (`L-8541302D`) and wait on an AWS Support case. **Do not put that on the critical path for this lab** — the lab is designed to complete on `ml.t3.large` with no quota request.
+> **Endpoint quota, training quota, and processing quota are three completely separate numbers**, and having one tells you nothing about the others. `ml.m5.large` has a *different* quota for each. The AWS default for all three on-demand families is 0. An endpoint that deployed fine in Lab 5 tells you nothing about whether a processing job will run in Lab 6.
 
 ### 1. Your endpoint must have data capture enabled
 
-Model Monitor analyses inference data that the endpoint captured to S3. **No capture means nothing to analyse.** Model Monitor does not warn you about this: the schedule is accepted, executions run, and reports come back empty while looking healthy.
+Evidently analyzes inference data that the endpoint captured to S3. **No capture means nothing to analyze.** The launcher checks the capture prefix before it starts a billable job and refuses to launch against an empty one — but understand what it is protecting you from.
 
 **Endpoint configs are immutable.** Capture cannot be switched on for a running endpoint. If your endpoint was deployed without it, you must create a new endpoint config and call `update-endpoint` (~3 min 47 s, zero downtime):
 
@@ -2149,14 +2326,14 @@ Capture lands under `s3://<bucket>/datacapture/<endpoint>/<variant>/<yyyy>/<mm>/
 
 ### 2. Use the ModelMonitorExecution role, not the ModelMonitor role
 
-The platform has two similarly named roles and they are **not interchangeable**:
+The platform has two similarly named roles, and they are **not interchangeable**:
 
-| Role | What it is | Use for |
+| Role | What it is | Use for                                       |
 |---|---|---|
 | `northstar-dev-ModelMonitor` | **Observer** identity. Read-only by design: no S3 write, no ECR pull. | Humans and automation that watch the platform |
-| `northstar-dev-ModelMonitorExecution` | **Service execution** identity. Writes reports, pulls the analyzer container. | **Model Monitor schedules — this lab** |
+| `northstar-dev-ModelMonitorExecution` | **Service execution** identity. Writes reports, pulls the container. | **The Evidently processing job — this lab**   |
 
-A monitoring execution is a batch job whose entire purpose is to *write* its findings (`statistics.json`, `constraint_violations.json`) and it cannot start without pulling its container from ECR. Hand it the observer role and it fails about an hour after you create the schedule, as an opaque `ProcessingJobStatus: Failed`.
+The drift job is a batch job whose entire purpose is to *write* its findings (`drift_report.json`, `drift_violations.json`) and it cannot start without pulling its container from ECR. Hand it the observer role and the job fails several minutes in as an opaque `ProcessingJobStatus: Failed`.
 
 This distinction — an identity that observes versus an identity that executes — is the design point, not a technicality. Note it in your Task 3 deliverable.
 
@@ -2166,35 +2343,104 @@ This distinction — an identity that observes versus an identity that executes 
 
 Implement monitoring across all five layers for the NorthStar churn model. All layers must surface in a single **CloudWatch Dashboard** named `NorthStar-AI-Platform`.
 
-| Layer | What to Monitor | Tool | Threshold |
-|-------|----------------|------|-----------|
-| **Infrastructure** | SageMaker endpoint CPU, memory | CloudWatch Metrics | CPU > 80% → alert |
-| **Pipeline** | Glue job success/failure rate | CloudWatch Events | Any failure → P2 alert |
-| **Model** | Data drift (PSI on top 3 features) | SageMaker Model Monitor | PSI > 0.2 → alert |
-| **Application** | Inference latency p50, p95, p99 | CloudWatch Metrics | p95 > 200 ms → alert (`ModelLatency` threshold `200000` — see note) |
-| **Business** | Daily churn alert volume (proxy) | CloudWatch Custom Metric | Volume drop >30% vs. 7-day avg → alert |
+| Layer | What to Monitor | Tool                                           | Threshold |
+| ------------------ | ---------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------- |
+| **Infrastructure** | SageMaker endpoint CPU, memory | CloudWatch Metrics                             | CPU > 80% → alert |
+| **Pipeline** | Glue job success/failure rate | CloudWatch Events                              | Any failure → P2 alert |
+| **Model** | Data drift (PSI on top 3 features) | Evidently, run as a processing job             | PSI > 0.2 → alert (metric published by you) |
+| **Application** | Inference latency p50, p95, p99 | CloudWatch Metrics                             | p95 > 200 ms → alert (`ModelLatency` threshold `200000` — see note) |
+| **Business** | Daily churn alert volume (proxy) | CloudWatch Custom Metric                       | Volume drop >30% vs. 7-day avg → alert |
 
 > **`ModelLatency` is emitted in MICROSECONDS.** Every latency threshold in this lab is written in milliseconds because that is how humans and SLAs talk, but CloudWatch does not. 200 ms is `200000`; 500 ms is `500000`. Writing `200` builds an alarm that trips at 0.2 ms — well below a healthy endpoint's normal latency, measured at roughly **4,100 µs (4.1 ms)** on `ml.m5.large` in Lab 5. That alarm sits in `ALARM` permanently and any automation wired to it fires against a healthy system. Verified on AWS 2026-07-30. Check the `Unit` field in `get-metric-statistics` output before setting any threshold.
 >
 > Related: the **first invocation after a deploy runs ~6x slower** (~24,000 µs measured) as the container warms. An alarm with `EvaluationPeriods: 1` will trip on your own deployment.
-
+>
 **Requirements:**
-- SageMaker Model Monitor data quality monitoring job configured and running, on an **hourly** schedule, on **`ml.t3.large`**, using the `ModelMonitorExecution` role
+- A **baseline** exported from your Lab 2 training feature set — a CSV of the **11 features the endpoint receives** — uploaded to `s3://<bucket>/monitoring/baseline/`.
+- A **drift analysis run** — Evidently executed as a processing job against your captured inference data, producing `drift_report.json` and `drift_violations.json`. Commit both.
 - At least one custom CloudWatch metric pushed programmatically (business layer)
 - Dashboard JSON exported and committed to `monitoring/dashboards/northstar-dashboard.json`
 
-Your baseline job produces `statistics.json` and `constraints.json`. Commit both — they are the evidence that Task 1's monitoring layer is real. A reference baseline over 1,377 customers profiled 12 features; `days_since_last_purchase` came out mean 58.80, std 78.24, range 0–452, with `completeness` 1.0 and `inferred_type` `Fractional`. Your numbers will differ; the *shape* of the output should not.
+**Running the drift analysis.** The launcher uploads the analysis script, checks that captured data actually exists, and submits the processing job:
+
+```bash
+python monitoring/run_evidently_job.py \
+  --bucket northstar-dev-data-<account> \
+  --role-arn arn:aws:iam::<account>:role/northstar-dev-ModelMonitorExecution \
+  --endpoint northstar-churn-prod \
+  --variant champion
+```
+
+The job runs the stock SageMaker scikit-learn container and `pip install`s Evidently at start-up. Two details in that command are load-bearing:
+
+```
+683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.4-2-py312-cpu-py3
+pip install evidently==0.7.21
+```
+
+> **The `py312` tag is required.** Evidently needs **Python ≥ 3.10**. The older `sklearn 1.2-1` processing image ships an earlier Python and the install fails. If you copy an image URI from an older tutorial, this is what breaks.
+>
+> **Pin the version.** Evidently's API broke at 0.7 — `column_mapping` was replaced by `DataDefinition`, and you can no longer hand a Report a bare DataFrame; it must be wrapped in a `Dataset`. Most tutorials online predate this and fail with an `ImportError`. An unpinned install also means your lab breaks the day upstream ships 0.8.
+>
+> **You do not need a NAT gateway for the `pip install`.** A processing job launched without a VPC config has egress through SageMaker's managed network. Verified 2026-08-07.
+
+**Expect alarming-looking pip output that is not an error.** Installing Evidently upgrades `protobuf` and `urllib3` past the versions the sklearn container pins, and pip says so loudly:
+
+```
+ERROR: pip's dependency resolver does not currently take into account all the
+packages that are installed. This behaviour is the source of the following
+dependency conflicts.
+sagemaker-sklearn-container 2.0 requires protobuf==3.20.2, but you have protobuf 7.35.1
+```
+
+**The job succeeds anyway** — nothing in the drift analysis uses those packages. Verified. But note the consequence: `botocore` inside that container is now on an unsupported `urllib3`, so **do not try to call `put-metric-data` from inside the job.** Publish your metric from the launcher after the job returns, which is what `publish_metrics.py` does.
+
+**Capture is partitioned per variant** — `datacapture/<endpoint>/<variant>/<yyyy>/<mm>/<dd>/<hh>/`. If you ran a two-variant canary in Lab 5, point the job at one variant's prefix, and say in your write-up which one and why.
+
+Reference run, verified 2026-08-07 on `ml.t3.medium`: 10,000 baseline rows against 800 captured records, **1 min 59 s** billed. Output:
+
+```
+feature                      test         value   thresh  drift
+days_since_last_purchase     psi         0.0227      0.2    no
+purchase_frequency_30d       psi         6.8354      0.2   YES
+avg_order_value              psi         1.3880      0.2   YES
+category_diversity_score     ks          0.8945     0.05    no
+total_spend_90d              ks          0.7629     0.05    no
+```
+
+Your numbers will differ; the *shape* of the output should not.
+
+> **The one thing most likely to make your results silently wrong.**
+>
+> **Evidently returns a different kind of number depending on the test.** PSI returns a **distance statistic** — it *rises* with drift, so drift means `value > threshold`. KS returns a **p-value** — it *falls* with drift, so drift means `value < threshold`. Measured on synthetic data as the mean shift increases:
+>
+> | mean shift | `ks` (p-value) | `psi` (statistic) |
+> |---|---|---|
+> | 0 | 0.272552 | 0.0235 |
+> | 2 | 0.000000 | 0.0472 |
+> | 5 | 0.000000 | 0.2757 |
+> | 15 | 0.000000 | 2.3176 |
+>
+> They move in **opposite directions.** If you loop over mixed tests with one `if value > threshold`, KS is inverted and reports **no drift on maximally drifted data**, because `0.0` is not greater than `0.05`. Nothing errors. Your report looks clean. This is the single most dangerous defect available in this lab, and it is a reasoning error, not an infrastructure one — no amount of AWS debugging will find it.
+>
+> **Two more that will cost you a run:**
+>
+> **1. Baseline the 11 features the *endpoint* receives** — not the full training frame. `churn_label` is the target and `churn_risk_score` is the Lab 3 recency baseline; neither is a model input. A baseline over 12 or 13 columns produces schema noise that never names its real cause.
+>
+> **2. Do not invoke with batched rows if you intend to monitor the traffic.** Send more than one CSV row per request and the whole payload is captured as a single string, so 200 batched predictions become one row in your comparison window. Score one row per request.
+>
+> **3. Use at least ~500 predictions in the comparison window.** A small window manufactures drift that is not there. The analysis script warns you when the window is under 500 rather than letting you believe a false positive.
 
 **Rubric:**
 
-| Item | Points | Pass Criteria |
+| Item                                         | Points | Pass Criteria |
 |------|--------|---------------|
 | All 5 layers visible in CloudWatch Dashboard | 15 | TA can open the dashboard and see at least one metric per layer |
-| SageMaker Model Monitor configured | 10 | Monitoring schedule exists; at least one baseline statistics report generated **and readable in S3** |
-| Custom metric pushed for business layer | 5 | `aws cloudwatch get-metric-statistics` returns data for the custom metric |
-| Dashboard JSON committed | 5 | `monitoring/dashboards/northstar-dashboard.json` is valid CloudWatch Dashboard JSON |
+| Evidently baseline **and** drift analysis run | 10 | A committed baseline CSV over the 11 endpoint features, **and** `drift_report.json` + `drift_violations.json` from an Evidently processing job over captured data. A Model Monitor schedule is NOT required and cannot be created — see the note above. |
+| Custom metric pushed for business layer      | 5 | `aws cloudwatch get-metric-statistics` returns data for the custom metric |
+| Dashboard JSON committed                     | 5 | `monitoring/dashboards/northstar-dashboard.json` is valid CloudWatch Dashboard JSON |
 
-> **Grading standard carried forward from Lab 5:** prefer *observed* evidence over configuration screenshots. A baseline statistics file with real numbers in it beats a console capture of a schedule that has never executed.
+> **Grading standard carried forward from Lab 5:** prefer *observed* evidence over configuration screenshots. A `drift_violations.json` with real numbers in it beats a console screenshot of a job that has never executed.
 
 ### Task 2 — Drift Detection Plan (15 points)
 
@@ -2241,10 +2487,12 @@ Define SLOs for the NorthStar churn prediction model in `docs/lab6-runbook.md`.
 |-----|--------|----------------------------------|-------------|--------------------------|
 | Availability | 99.5% | Successful predictions / total requests | | |
 | Latency (p95) | **< 20 ms** (`ModelLatency` ≤ `20000`) | Requests completing < 20 ms / total requests | | |
-| Prediction Quality | Recall@10% ≥ 0.35 on weekly sample | Weekly sample passing threshold / total weekly samples | | |
+| Prediction Quality | Recall@10% ≥ 0.25 on weekly sample | Weekly sample passing threshold / total weekly samples | | |
 | Fairness | Recall gap across loyalty tiers ≤ 10pp | Weeks within fairness threshold / total weeks | | |
 
 Fill in the Error Budget (in minutes/month or events/month) and the Deployment Freeze Trigger for each SLO.
+
+> **Why the prediction-quality target is 0.25 and not something rounder.** With roughly 22% positives in the population, scoring only the top 10% caps achievable recall near **0.45** — you cannot retrieve more churners than fit in the decile you are allowed to contact. The Lab 3 reference model achieves **0.3106** (`train_reference.py`, measured 2026-08-02, registry v4), and Lab 4's promotion gate is **≥ 0.25**. Setting the SLO above the gate that let the model ship would put it in breach on the day it launched. An SLO your system fails at launch is not a target; it is a broken alarm you will learn to ignore.
 
 > **Why the latency SLO is 20 ms while the Task 1 alert fires at 200 ms.** These are different numbers doing different jobs, and conflating them is the most common SLO mistake in industry. An **SLO** is a promise measured over a month and spent down as an error budget. An **alert threshold** is the point at which you wake a human. Measured steady-state p95 on this endpoint is ~4.15 ms, so a 200 ms SLO would be met 48x over — free, unbreachable, and it would teach you nothing. At 20 ms you keep a healthy ~5x margin, but the ~24,000 µs cold start on every deployment *does* breach it. That is the intended lesson: your own deploys consume your error budget, which is precisely why error budgets govern deployment freezes.
 
@@ -2306,141 +2554,362 @@ Write complete runbooks for **two** failure scenarios in `docs/lab6-runbook.md`.
 
 These cost previous runs of this course real time and real money. They are not hypothetical.
 
-1. **Processing-job quota defaults to 0 for every non-burstable instance.** Not low — zero. Only `ml.t3.{medium,large,xlarge}` have a non-zero default. Endpoint, training and processing quotas are three separate numbers per instance type; one being fine says nothing about the others. Use `ml.t3.large`. Verified 2026-07-31.
-2. **`ml.t3.medium` cannot run Model Monitor.** The analyzer is a Spark container and OOMs on ~1,400 rows after **13 min 43 s**, with an error that blames your data volume rather than the instance memory. `ml.t3.large` is the floor.
+1. **PSI and KS move in opposite directions.** PSI is a statistic (drift when `>` threshold); Evidently reports KS as a p-value (drift when `<` threshold). One comparison operator cannot serve both, and getting it wrong reports *no drift on maximally drifted data* without erroring. Verified 2026-08-07.
+2. **Processing-job quota defaults to 0 for every non-burstable instance.** Not low — zero. Only `ml.t3.{medium,large,xlarge}` have a non-zero default. Endpoint, training and processing quotas are three separate numbers per instance type; one being fine says nothing about the others. `ml.t3.medium` is sufficient for Evidently. Verified 2026-07-31.
 3. **`ModelLatency` is in microseconds.** 200 ms is `200000`. Every latency threshold in this lab depends on this. Verified both directions on AWS: `200000` stayed `OK`, `1000` alarmed in under a minute.
 4. **Cold start is ~6x steady-state latency** (~24,000 µs vs ~4,150 µs). An alarm with `EvaluationPeriods: 1` trips on your own deployment.
-5. **No data capture means no monitoring.** Model Monitor fails silently and late. Run `scripts/preflight-lab6.sh` first.
-6. **`ModelMonitor` ≠ `ModelMonitorExecution`.** The observer role cannot run a monitoring job. Fails ~1 hour in, as an opaque `Failed`.
-7. **Endpoint configs are immutable.** Data capture cannot be added to a running endpoint; you must roll a new config.
-8. **Endpoints bill hourly until deleted.** Rolling back to weight 0 does not stop the charge.
-9. **Monitoring schedules outlive endpoints** and keep launching billable jobs. Delete the schedule explicitly.
-10. **Burstable instances cannot be auto-scaling targets** (carried from Lab 5).
-11. **IAM propagation lag ~30 s** — re-running immediately shows the *old* error and looks like your fix failed.
-12. **Non-ASCII in AWS-facing `description` fields** — some services reject em dashes, others accept them, so failures look arbitrary.
-13. **Console Resource Explorer lags hours.** Verify against the live API.
-14. **Auto-scaling does NOT orphan scalable targets** on endpoint deletion. Verified. Do not "fix" this non-problem.
+5. **Endpoint configs are immutable.** Data capture cannot be added to a running endpoint; you must roll a new config.
+6. **Endpoints bill hourly until deleted.** Rolling back to weight 0 does not stop the charge.
+7. **Any timer you build outlives your endpoint.** SageMaker monitoring schedules are closed to you, but an EventBridge rule or cron loop you write yourself has exactly the same failure mode: it keeps launching billable processing jobs after the endpoint is gone. If you automate the drift run, delete the trigger explicitly.
+8. **Burstable instances cannot be auto-scaling targets** (carried from Lab 5).
+9. **IAM propagation lag ~30 s** — re-running immediately shows the *old* error and looks like your fix failed.
+10. **Non-ASCII in AWS-facing `description` fields** — some services reject em dashes, others accept them, so failures look arbitrary.
+11. **Console Resource Explorer lags hours.** Verify against the live API.
+12. **Auto-scaling does NOT orphan scalable targets** on endpoint deletion. Verified. Do not "fix" this non-problem.
 
 ## Teardown (required — read before you submit)
 
-**Teardown is a gate, not a rubric line.** An endpoint or monitoring schedule still running after the deadline is a **10-point deduction**, applied on top of the gate.
+**Teardown is a gate, not a rubric line.** An endpoint or drift-automation trigger still running after the deadline is a **10-point deduction**, applied on top of the gate.
 
 ```bash
 bash scripts/teardown-lab6.sh
 ```
 
-Order matters. Delete the **monitoring schedule first**, then the endpoint. A schedule left behind keeps launching processing jobs that bill on their own instances, and it will happily do so long after the endpoint it was pointed at is gone.
+Order matters. Stop **any timer or in-flight processing job first**, then delete the endpoint. Anything on a schedule keeps launching processing jobs that bill on their own instances, and it will happily do so long after the endpoint it was pointed at is gone.
 
 Teardown must remove, at minimum:
-- Monitoring schedule(s)
+- Any EventBridge rule or cron trigger you built to automate the drift run
+- In-flight processing jobs
 - The endpoint, endpoint config, and both SageMaker Models
 - CloudWatch alarms created for Task 1 and Task 3
 - Any scaling target left from Lab 5
 
 Then confirm with an independent all-region sweep, as in Labs 2–5. Custom CloudWatch metrics cannot be deleted — they expire after 15 months of no data. That is expected; the $0.30 metric-month charge is already accounted for.
 
----
-
 # Lab 7: Metrics + Economics & Business Value
 
 **Assigned:** Thu Nov 19 | **Due:** Tue Dec 1, midnight *(Tuesday exception — see syllabus)*
 **Chapters:** *Metrics, Benchmarks & Guardrails*, *AI Economics*, *Measuring Business Value*
-**Builds on:** Labs 1–6 — measures the value and cost of the full platform
+**Builds on:** Labs 1–6 — measures the value and cost of the platform you built
 
 ## Objective
 
-The NorthStar platform is live. Now answer the question every CFO and CDO will ask: *Is it worth it?* This lab builds the measurement infrastructure to answer that question rigorously — not with anecdotes, but with a metric pyramid, unit economics, and an executive scorecard that traces from model outputs to business outcomes.
+The NorthStar platform is live. Now answer the question every CFO and CDO will ask: *is it worth it?*
 
-Governance and closing-the-loop content is addressed in the team project. This lab focuses on economics and value measurement.
+This lab builds the measurement infrastructure to answer that question rigorously — a metric pyramid, unit economics computed from your own measured usage, and an executive scorecard that traces from model outputs to business outcomes. Every number you produce must be derived from something you or the reference implementation actually observed. **Invented figures score zero even when they are plausible.**
+
+Governance and closing-the-loop content is addressed in the team project. This lab is economics and value measurement.
+
+## Starter Kit
+
+**None.** Labs 5–7 have no starter kit. Lab 7 consumes what Labs 1–6 produced.
+
+## Read This First — Cost
+
+**Lab 7 is the cheapest lab in the course, and the only one with no infrastructure to tear down.**
+
+It requires no endpoint, no processing job, no Glue run, and no Terraform apply. Every AWS call in this lab is read-only.
+
+| Call | Rate | This lab's usage |
+|---|---|---|
+| `aws pricing get-products` | **free** | ~10 calls |
+| `aws ce get-cost-and-usage` | **$0.01 per request** | ~5 calls = **$0.05** |
+| `aws cloudwatch get-metric-statistics` | $0.01 per 1,000 | negligible |
+
+**Total expected spend: under $0.10.** If you find yourself launching an instance in Lab 7, stop — you have misread a task.
+
+There is no teardown script for this lab because there is nothing to tear down. There *is* still a teardown gate, and it is inherited: see **Teardown** at the end.
+
+## Read This Second — Your AWS Bill Is Not Your Cost
+
+Before you start, understand the single most important fact in this lab.
+
+The reference account ran **all of Labs 1 through 6** during July 2026 — Feature Store ingestion, Glue ETL and crawlers, three SageMaker endpoints across three instance families, model-monitoring processing jobs, CodeBuild, a NAT gateway, KMS, CloudWatch alarms and custom metrics. Cost Explorer reports the following for that month:
+
+| Service | Measured usage | Billed |
+|---|---|---|
+| SageMaker Hosting `ml.m5.large` | 0.5889 hr | **$0.00** |
+| SageMaker Hosting `ml.t2.medium` | 0.4328 hr | **$0.00** |
+| SageMaker Hosting `ml.m6g.large` | 0.0192 hr | **$0.00** |
+| SageMaker Processing `ml.t3.large` | 0.0958 hr | **$0.00** |
+| SageMaker Processing `ml.t3.medium` | 0.2283 hr | **$0.00** |
+| Glue ETL | 1.0311 DPU-hr | **$0.00** |
+| Glue Crawler | 0.4786 DPU-hr | **$0.00** |
+| Feature Store writes | 7,967 request units | **$0.00** |
+| S3 requests | 764 PUT / 3,260 GET | **$0.00** |
+| NAT Gateway | 4 hr | **$0.00** |
+| CodeBuild | 10 build-minutes | **$0.00** |
+| **Whole account, whole month** | | **$0.00** |
+
+Free tier absorbed the entire platform. **Your bill will look the same, and it will teach you nothing.**
+
+This is not a quirk of a course account. It is the ordinary condition of every pilot AI system inside a large enterprise: the workload runs on committed capacity, an enterprise agreement, a shared account, or credits, and the invoice line that would tell you what it costs does not exist. Meanwhile the same system at production scale is a real budget line that someone has to defend.
+
+**So the rule for this lab, and for the rest of your career:**
+
+> **Unit economics are computed from `usage × published rate`. Never from the invoice.**
+> The invoice tells you what you were charged. The rate card tells you what you consumed. Only the second one scales, and only the second one survives contact with a CFO.
+
+Cost Explorer still has a job in this lab — as a **cross-check on usage quantities**, not on dollars. `--metrics UsageQuantity` is the reliable field. `--metrics UnblendedCost` will hand you zeros.
+
+## Prerequisites
+
+### 1. Enable Cost Explorer at least 24 hours before you start
+
+Cost Explorer is opt-in, and on first activation AWS takes **up to 24 hours** to prepare historical data. If you enable it the night the lab is due, you will get an empty result and no error explaining why.
+
+```bash
+# Enable in the console: Billing and Cost Management > Cost Explorer > Launch
+# Then confirm from the CLI (returns data only after preparation completes):
+aws ce get-cost-and-usage \
+  --time-period Start=2026-11-01,End=2026-12-01 \
+  --granularity MONTHLY --metrics UsageQuantity \
+  --group-by Type=DIMENSION,Key=SERVICE --region us-east-1
+```
+
+Two things can block this call, and they produce different errors:
+
+- `DataUnavailableException` — Cost Explorer is enabled but has not finished preparing. Wait.
+- `AccessDeniedException` — your IAM identity cannot read billing data. On some account configurations the **root user** must first activate *IAM user and role access to Billing information* (Account Settings). You cannot fix this from an IAM user, and you cannot fix it in the ten minutes before a deadline.
+
+**If Cost Explorer will not cooperate, the lab is still completable.** Every dollar figure in this lab comes from the rate card. Cost Explorer is a convenience for reading your own usage quantities; you can substitute usage you logged during Labs 2–6. Say in your write-up which source you used.
+
+### 2. The Price List API is your rate card — with one exception
+
+`aws pricing` is free, needs no quota, and is authoritative for everything you deployed:
+
+```bash
+aws pricing get-products --service-code AmazonSageMaker --region us-east-1 \
+  --filters 'Type=TERM_MATCH,Field=instanceName,Value=ml.m5.large' \
+            'Type=TERM_MATCH,Field=regionCode,Value=us-east-1' \
+  --query 'PriceList' --output text | python3 -m json.tool | head -40
+```
+
+> **The `pricing` endpoint exists only in `us-east-1` and `ap-south-1`.** `--region us-east-1` is not optional, and it does not mean "price things in us-east-1" — that is what the `regionCode` filter is for. Getting this wrong returns an endpoint error, not a price.
+
+**The exception is Bedrock.** The Price List API's Bedrock coverage in `us-east-1` is incomplete: it exposes input-token prices for a handful of older Claude models and **no output-token prices at all**. Verified 2026-08-01. If your second system is Track B or Track C, take LLM token prices from the Bedrock pricing page, cite the date you read it, and state it as an assumption. Do not silently substitute the Price List figure — an input-only cost model understates an LLM system by roughly half.
+
+### 3. Two case numbers do not reconcile. You must handle this explicitly.
+
+This is a real inconsistency in the NorthStar case material, not a trick.
+
+| Source | Figure | Population and window |
+|---|---|---|
+| Case overview | churn **18% per year** | 2.1M active customers, annual |
+| Training dataset | positive rate **22.0%** | ~10,000 sampled customers, 90-day label |
+
+A 22.0% rate per 90 days compounds to roughly **63% per year**, which is not 18%. The two figures describe different populations over different windows, and the sampled dataset is not a random draw from the customer base.
+
+**What this means for your work:**
+
+- **Business math** (value, ROI, lost LTV, the CDO's target) uses the case figures: 2.1M active customers, 18% annual churn, $340 lifetime value — which multiply to the case's stated $128.5M annual churn problem. That headline number is reproducible, and your analysis should reconcile to it.
+- **Model math** (recall, precision, lift, achievable coverage) uses the measured dataset figures: 22.0% base rate, Recall@10% of **0.3106** against a ceiling near 0.45.
+- **Never multiply one by the other without saying so.** Any place your analysis crosses between them, state the bridging assumption in one sentence. Task 2 is graded partly on whether you did.
+
+### 4. The churn label is 90 days
+
+Lab 2 derives `churn_label` from a **90-day holdout window** following the observation period. Lab 3 trains against it, Lab 6's drift plan depends on it, and the case overview states it. Everything in Lab 7 — measurement windows, attribution windows, time-to-outcome — must use **90 days**.
+
+Watch the distinction between the *label* window and the *feature* windows, because both appear in the same table. `purchase_frequency_30d` looks **back** 30 days to build a feature; `churn_label` looks **forward** 90 days to record an outcome. A value methodology note that reports outcomes on a 30-day cycle has confused the two, and it will cost points in Task 4.
+
+## Your Measured Inputs
+
+You are not starting from a blank page. These are real, from the reference implementation, and you may use them directly. If your own Labs 2–6 produced different numbers, use yours and say so.
+
+**Model performance** — `models/churn/train_reference.py` (the Athena path), measured end to end on 2026-08-02 against the 10,000-customer dataset, model-registry version **v4**, deterministic `ORDER BY` pull, `seed=42`, `test_size=0.30`. These supersede every earlier figure in circulation. Note the lift is *smaller* than previously published: the recency-only baseline is much stronger at this scale, so feature engineering buys less than the course used to claim — but for the first time the margin has an interval around it that excludes zero.
+
+| Quantity | Value |
+|---|---|
+| AUC-ROC | **0.7696** |
+| Recency-only baseline AUC | 0.7233 |
+| AUC lift over baseline | **+0.0464** |
+| Lift 95% CI | **[0.0254, 0.0670]** — excludes zero |
+| Precision@10% | **0.6833** |
+| Recall@10% | **0.3106** |
+| Recall@10% theoretical ceiling at 22.0% base rate | **~0.45** |
+| Train / test split | 6,999 / 3,000 |
+| Lab 4 promotion gate / Lab 6 SLO | Recall@10% ≥ 0.25 |
+| Inference latency p95 | **~4.1 ms** |
+| Cold-start latency, first call after deploy | ~24 ms |
+
+**Rate card (AWS Price List API, us-east-1, verified 2026-08-01)**
+
+| Item | Rate |
+|---|---|
+| SageMaker Hosting `ml.t2.medium` | $0.056 / hr |
+| SageMaker Hosting `ml.m5.large` | $0.115 / hr |
+| SageMaker Hosting `ml.m6g.large` | $0.0924 / hr |
+| SageMaker Processing `ml.t3.medium` | $0.05 / hr |
+| SageMaker Processing `ml.t3.large` | $0.10 / hr |
+| SageMaker Serverless Inference, 2 GB | $0.00004 / sec |
+| Glue ETL and Crawler | $0.44 / DPU-hr |
+| Glue Flex ETL | $0.29 / DPU-hr |
+| Feature Store writes | $1.25 / million request units |
+| Feature Store reads | $0.25 / million request units |
+| Feature Store online storage | $0.45 / GB-month |
+| S3 standard storage | $0.023 / GB-month |
+| S3 requests | $0.005 / 1,000 PUT · $0.0004 / 1,000 GET |
+| CloudWatch alarm | $0.10 / alarm-month |
+| CloudWatch custom metric | $0.30 / metric-month (first 10,000) |
+| CloudWatch API request | $0.01 / 1,000 |
+
+> **The Price List API returns one pricing tier, and it may not be yours.** Query `CW:MetricMonitorUsage` and it returns **$0.02** — the rate for accounts publishing over one million metrics. You are publishing about ten, so your rate is **$0.30**. The API answered a question you did not ask. Read the `description` field on every price dimension before you use the number in it. This has produced a 15x error in a real cost model.
+
+**Measured usage, full Labs 1–6 build (reference account, July 2026)**
+
+Reproduced from the table above: hosting 0.5889 / 0.4328 / 0.0192 hr, processing 0.0958 / 0.2283 hr, Glue 1.0311 ETL + 0.4786 crawler DPU-hr, Feature Store 7,967 write RU, S3 764 PUT / 3,260 GET, NAT 4 hr, CodeBuild 10 build-min.
+
+> **These are July 2026 *cumulative* usage figures from Cost Explorer, measured on the retired 1,200-customer dataset.** Two cautions. First, they are a month's total across every run, **not the cost of one pass** — scaling them as though they were per-run is a real error, and this course's own cost model made it until 2026-08-03. Second, the dataset is now 8x larger: a single measured ETL pass is roughly **380–500 DPU-seconds** across the two Glue jobs.
+>
+> **That range is the point, not a hedge.** Four measured single-pass runs on byte-identical data gave **430, 400, 380 and 502** total DPU-seconds — a **32% spread** with no change to the input, the code, or the configuration. Glue bills on DPU-hours it decides you consumed, and that number moves run to run.
+>
+> So: **do not report a single measured DPU figure as though it were a constant, and do not treat a number outside someone else's measurement as an error.** If your pass lands at 380 or at 500, both are normal. If your cost model's conclusion changes materially between those two ends, the model is too sensitive to a noisy input and you should say so — that observation is worth more marks than a precise-looking point estimate. Use *your own* measured usage, state the range you observed, and say which quantity you are scaling.
+
+Two of these are worth noticing before you use them. The `ml.t3.large` figure of 0.0958 hr is **5 min 45 s** — one successful monitoring analyzer run. The `ml.t3.medium` figure of 0.2283 hr is **13 min 42 s** — one analyzer run that ran out of memory and failed. **Failed jobs bill.** A cost model built only from successful runs understates the truth, and in early-stage ML the failures are frequently the larger number. Yours will be.
+
+> **These two figures are from SageMaker Model Monitor, which Lab 6 no longer uses** — its Spark analyzer needed `ml.t3.large` and OOM'd on `ml.t3.medium`. Lab 6 now runs Evidently, which completes the same comparison in **1 min 59 s on `ml.t3.medium`** for about **$0.0017**. The July figures are left here deliberately, because the comparison is the lesson: **a tool substitution changed this line item by roughly 9x while changing nothing about the business question being answered.** When you build your cost model in Task 2, that is the kind of lever worth looking for — far more of your bill is architecture choice than volume.
+
+## Deliverable
+
+**One file: `docs/lab7-value-scorecard.md`**, with five top-level sections numbered to match the tasks:
+
+```
+## 1. Metric Pyramid
+## 2. Unit Economics
+## 3. Executive Value Scorecard
+## 4. Value Methodology Note
+## 5. Measurement Reflection
+```
+
+**Plus one machine-checkable artifact: `docs/lab7-cost-model.csv`**, with the header
+
+```csv
+line_item,category,usage_quantity,unit,rate_usd,monthly_cost_usd,source,assumption
+```
+
+Every dollar figure that appears in Section 2 must appear as a row in this file, and the rows must sum to your stated total. This is graded. It exists because a cost model whose arithmetic cannot be checked is an opinion.
+
+---
 
 ## Tasks
 
 ### Task 1 — Metric Pyramid (25 points)
 
-Build the four-layer metric pyramid for **two** NorthStar AI systems: the churn prediction model (required) and either the offer generation or customer service agent system (your Track B/C choice from Lab 3).
+Build the four-layer metric pyramid for **two** NorthStar AI systems:
 
-**Four layers per system:**
+1. **Churn prediction** (required — you deployed it), and
+2. **One of** offer generation (Track B) or the customer service agent (Track C).
+
+> **You do not need to have deployed the second system.** Bedrock inference quotas start at zero on a new account and Track B/C may have been unavailable to you. Task 1 is a design and measurement-architecture exercise; the second pyramid is graded on the quality of its reasoning against the case material, not on whether the system exists in your account. Say in one line which track you chose and whether you deployed it.
+
+**The four layers:**
 
 | Layer | Description | Example (Churn) |
 |-------|-------------|-----------------|
-| Model / System | Technical performance metrics | AUC-ROC, p95 latency |
-| Model Output | What the model produces | Churn probability scores, alert rate |
-| User Experience | How users interact with the output | Offer acceptance rate, retention campaign click-through |
-| Business Outcome | Revenue / cost impact | Customer retention rate, prevented churn revenue |
+| Model / System | Technical performance | AUC-ROC 0.7696, p95 latency 4.1 ms |
+| Model Output | What the model emits | Score distribution, daily alert volume |
+| User Experience | How people interact with the output | Offer acceptance rate, campaign click-through |
+| Business Outcome | Revenue or cost impact | 90-day retention rate, prevented churn revenue |
 
 **Required for each system:**
-- At least 2 specific metrics per layer (8 per system minimum)
-- For each metric: calculation method, owner, update frequency, and the decision it informs
-- Bottom-up verification: what evidence would confirm that a lower-layer improvement causes an upper-layer improvement? Identify which causal links are empirically validated vs. assumed.
+
+- At least **2 metrics per layer** (8 per system minimum).
+- For each metric: **calculation method, owner, update frequency, and the decision it informs.** An owner is a named role from the NorthStar stakeholder table, not "the team." A decision is a stated threshold and the action taken when it is crossed.
+- **Causal link analysis.** For every adjacent-layer link in the chain, label it **Validated** or **Assumed**. A link is *Validated* only if both metrics are measured on the same population over the same window by an existing pipeline. Everything else is *Assumed*. For each Assumed link, name the experiment that would validate it.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Pyramid complete for both systems | 10 | Each system has ≥8 metrics across 4 layers |
-| Each metric has all required attributes | 8 | Calculation method, owner, frequency, and decision all specified for each metric |
-| Causal link analysis distinguishes validated from assumed | 7 | At least 2 links per system are labeled as "assumed" with a stated experiment that would validate them |
+| Pyramid complete for both systems | 10 | Each system has ≥8 metrics correctly placed across all 4 layers |
+| Each metric has all four attributes | 8 | Calculation, owner (named role), frequency, and decision threshold present for every metric |
+| Causal links classified, assumptions surfaced | 7 | Every adjacent link labeled; ≥2 links per system labeled Assumed with a stated validating experiment |
 
-### Task 2 — Unit Economics Analysis (25 points)
+### Task 2 — Unit Economics (25 points)
 
-Calculate the unit economics of the NorthStar AI platform as deployed in Labs 1–5.
+All four parts. Every figure traces to `docs/lab7-cost-model.csv`.
 
-**2a. Cost per Prediction — Churn Model (10 points)**
+**2a. Pull the rate card (5 points)**
 
-Calculate the fully-loaded cost per churn prediction:
-- Inference compute (SageMaker endpoint cost / predictions per month)
-- Amortized training cost (training job cost / model lifetime predictions)
-- Feature Store read cost (per-request pricing)
-- Data pipeline cost allocated to churn (Glue job cost / models served)
+Use `aws pricing get-products` to retrieve the current published rate for **at least four** resources your platform actually uses. Show the command and the returned price dimension for each, including the `description` field.
 
-Present as: `$X.XX per 1,000 predictions`
+State the date you pulled it. AWS prices change; a rate card without a date is not a rate card.
 
-**2b. Total Platform Cost Breakdown (10 points)**
+**2b. Cost per 1,000 predictions — churn model (8 points)**
 
-Estimate the monthly cost of the full NorthStar platform across the six cost categories from the chapter:
+Compute the fully-loaded cost per prediction for the churn model **at NorthStar production scale**: 2.1M active customers scored weekly.
 
-| Category | Monthly Cost ($) | Notes |
-|----------|-----------------|-------|
+Four components, all required:
+
+- **Inference compute** — as architected in Labs 5–6, i.e. a persistent real-time endpoint
+- **Amortized training** — training cost ÷ predictions served over the model's lifetime
+- **Feature Store online reads** — one read per prediction
+- **Data pipeline allocated to churn** — Glue ETL and crawler cost, divided across the models the pipeline serves
+
+Present the result as **`$X.XXX per 1,000 predictions`** and show the arithmetic.
+
+> The measured Glue DPU-hours in your inputs come from a 19,500-row lab dataset. NorthStar is not that size. **Derive your scale factor from the case** — annual revenue and average order value give you transaction volume — and state it. A cost model that silently applies lab-scale pipeline cost to a 2.1M-customer business is off by more than an order of magnitude.
+
+> One component may legitimately come out at or near zero. If it does, **say why in one sentence.** The reference implementation trains locally rather than on SageMaker, which does not make training free — it moves the cost into a category that does not appear on any AWS bill. Naming a cost you moved rather than eliminated is the point of the exercise.
+
+**2c. Total platform cost (7 points)**
+
+Estimate the monthly cost of the full NorthStar platform — all three AI systems — across six categories:
+
+| Category | Monthly Cost ($) | Stated Assumption |
+|----------|-----------------|-------------------|
 | Compute (training) | | |
 | Compute (inference) | | |
-| Data storage and transfer | | |
-| Third-party APIs and services | | |
-| Human labor (your time — estimate at $80/hr) | | |
+| Data pipeline, storage and transfer | | |
+| Third-party APIs and services (Bedrock) | | |
+| Human labor (estimate at $80/hr) | | |
 | Platform and tooling | | |
 | **Total** | | |
 
-**2c. One Cost Optimization (5 points)**
+> Pipeline compute (Glue) belongs in **row 3**, not in either compute row. The six-category taxonomy from the chapter splits compute by *model* lifecycle stage and treats the data platform as one line. Put it wherever you like, but put it somewhere, exactly once, and say where.
 
-Identify one specific cost optimization (e.g., switch churn model to SageMaker Serverless Inference, enable Bedrock prompt caching, reduce Model Monitor sample rate). Quantify the estimated savings. State the quality or operational tradeoff you accept.
+Compare your total against NorthStar's stated **$85,000/month** AI platform budget. If your total is a small fraction of the budget, that is a finding, not an error — report it and say what it implies about which decisions actually matter.
+
+**2d. One cost optimization (5 points)**
+
+Identify **one specific** optimization, quantify it, and state the tradeoff you accept.
+
+Quantified means: the current cost, the optimized cost, the dollar and percentage saving, and the arithmetic connecting them.
+
+The tradeoff must be **operational, not rhetorical.** "Slightly less flexible" is not a tradeoff. If your optimization changes the serving architecture, check it against the four SLOs you wrote in Lab 6 and say which of them survive it. Some optimizations on this platform invalidate an SLO you already committed to; finding that out here is much cheaper than finding it out in production.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Cost per prediction calculated with methodology shown | 10 | Shows the math, not just the final number |
-| All 6 cost categories estimated | 10 | Each row has a dollar figure and a stated assumption |
-| Optimization is specific and quantified | 5 | Names a specific AWS feature or configuration change; estimates % savings |
+| Rate card pulled from the API with dates | 5 | ≥4 resources, command shown, `description` field reproduced, date stated |
+| Cost per 1,000 predictions, all 4 components | 8 | Arithmetic shown; scale factor for the pipeline derived and stated; any zero component explained |
+| Six-category platform cost with assumptions | 7 | Every row has a figure and a stated assumption; total compared to the $85K budget; `lab7-cost-model.csv` present and sums to the stated total |
+| Optimization specific, quantified, tradeoff real | 5 | Names a specific AWS feature or architecture change; before/after arithmetic; tradeoff checked against Lab 6 SLOs |
 
 ### Task 3 — Executive Value Scorecard (25 points)
 
-Produce a one-page executive scorecard in `docs/lab7-value-scorecard.md`. Audience: CFO and CDO. No jargon, no ML metrics, no AUC. Write to a business reader.
+Produce a one-page scorecard in Section 3. Audience: **Maya Chen (CDO) and Robert Hess (CFO).** No ML metrics. No AUC, no PSI, no recall. Write for a business reader who controls the budget.
 
-**Required sections:**
+**Required structure:**
 
 ```markdown
 ## NorthStar AI Platform — Q4 2026 Value Scorecard
 
 ### Platform Summary
-[2–3 sentences: what the platform does and why it was built]
+[2-3 sentences: what the platform does and why it was built]
 
 ### Systems in Production
-| System | Business Metric | Current Performance | vs. Projection | Status |
-|--------|----------------|---------------------|----------------|--------|
-| Churn Prediction | | | | 🟢 On Track / 🟡 Watch / 🔴 Action Required |
+| System | Business Metric | Current Performance | vs. Target | Status |
+|--------|----------------|---------------------|------------|--------|
+| Churn Prediction | | | | On Track / Watch / Action Required |
 | [Second system] | | | | |
 
+### Can We Hit the Stated Target?
+[Required. See below.]
+
 ### Attribution
-[How was business impact measured? What is the counterfactual?
+[How would business impact be measured? What is the counterfactual?
 What is your confidence level and why?]
 
 ### Investment Recommendation
@@ -2453,70 +2922,131 @@ What is your confidence level and why?]
 [What measurement gaps remain? What experiments would close them?]
 ```
 
+**The "Can We Hit the Stated Target?" section is the heart of this task.**
+
+The CDO's stated success metric for churn prediction is: **reduce the annual churn rate from 18% to 14% within one year of deployment.** The retention program contacts only the **top 10% highest-risk customers**.
+
+Work out what that target actually requires, given the model you measured:
+
+- How many customers must be retained per year to move the rate by 4 percentage points?
+- How many at-risk customers does the model actually place in the contactable top decile, at its measured Recall@10%?
+- Therefore, what fraction of contacted customers must the retention offer save?
+- Is that fraction achievable? Compare it to a stated, sourced benchmark for retention-offer effectiveness.
+- If it is not achievable, what *is* achievable — and what would have to change (model recall, decile coverage, offer conversion) to close the gap?
+
+Then tell the CDO, in the scorecard, in plain language. **A scorecard that reports the target as "on track" without doing this arithmetic has failed the task**, regardless of how well written it is.
+
+You are not being asked to condemn the platform. A system can be a strong investment and still miss a target that was set before anyone measured the model. Reporting both, clearly, is the job.
+
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Scorecard is readable by a non-technical executive | 10 | No ML-specific terms without plain-language explanation |
-| Attribution method is explicitly stated | 8 | Names the specific method (A/B test, holdout group, etc.) and its confidence level |
-| Investment recommendations are reasoned from data | 7 | Each recommendation cites a specific metric or finding, not gut feeling |
+| Target feasibility computed and reported honestly | 10 | Required save rate derived from measured recall and shown; compared to a sourced benchmark; verdict stated plainly; achievable alternative quantified if the target is not reachable |
+| Readable by a non-technical executive | 8 | No ML term appears without plain-language translation; no AUC, PSI, recall, or drift vocabulary in Section 3 |
+| Attribution method explicitly stated | 7 | Names the specific method (randomized holdout, A/B test, difference-in-differences), states the counterfactual, states confidence level with a reason |
 
 ### Task 4 — Value Methodology Note (15 points)
 
-Write a complete value methodology note for **one** NorthStar AI system using this template in `docs/lab7-value-scorecard.md`:
+Write a complete value methodology note for **one** NorthStar AI system, in Section 4. **All 13 fields.** No blanks, no "TBD."
 
 ```markdown
 ## Value Methodology Note: [System Name]
 
 | Field | Value |
 |-------|-------|
-| System name | |
-| Business objective | |
-| Value dimension (efficiency / revenue / risk / experience) | |
-| Primary metric | |
-| Guardrail metrics (≥2) | |
-| Attribution method | |
-| Counterfactual | |
-| Measurement window | |
-| Confidence level | Low / Medium / High |
-| Known confounders | |
-| Financial conversion logic | |
-| Metric owner | |
-| Review cadence | |
+| 1. System name | |
+| 2. Business objective | |
+| 3. Value dimension (efficiency / revenue / risk / experience) | |
+| 4. Primary metric | |
+| 5. Guardrail metrics (>=2) | |
+| 6. Attribution method | |
+| 7. Counterfactual | |
+| 8. Measurement window | |
+| 9. Time to observe outcome | |
+| 10. Confidence level (Low / Medium / High) | |
+| 11. Known confounders | |
+| 12. Financial conversion logic | |
+| 13. Metric owner and review cadence | |
 ```
+
+Two fields carry most of the weight:
+
+- **Counterfactual (7)** must describe what happens *without* the AI system in operational terms. "Nothing" and "no AI" are not counterfactuals. "The retention team manually segments on days-since-last-purchase greater than 60, which surfaces roughly X% of the churners the model finds" is one.
+- **Time to observe outcome (9)** is **90 days**, because that is the label. If your measurement window in field 8 is shorter than field 9, your methodology reports results before the outcome exists. Say how you handle the gap.
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| All 12 fields completed | 10 | No field is blank or "TBD" |
-| Counterfactual is specific and plausible | 5 | Describes what would happen without the AI system in concrete terms |
+| All 13 fields completed substantively | 10 | No field blank, "TBD," or a restatement of its own label |
+| Counterfactual and outcome timing are specific and consistent | 5 | Counterfactual describes concrete current-state behavior; measurement window is reconciled against the 90-day label |
 
 ### Task 5 — Measurement Reflection (10 points)
 
-Write a ~300-word reflection in `docs/lab7-value-scorecard.md`:
+Roughly 300 words in Section 5.
 
-1. What are the two weakest measurement assumptions in your metric pyramid?
-2. For each weak assumption: what experiment would you run to validate or invalidate it?
-3. Which layer of the pyramid (model/system, output, UX, business) is currently least observed in your NorthStar platform, and what would it take to instrument it?
+1. What are the **two weakest measurement assumptions** in your metric pyramid? Name the specific causal link, not "the model might be wrong."
+2. For each: what experiment validates or invalidates it? State what you measure, the population, the duration, and the success criterion. A sample-size or power sketch earns full credit; an experiment with no n is an idea, not a design.
+3. Which pyramid layer is **least observed** in the platform as built? What specific data is missing, what engineering would capture it, and how long would that take?
 
 **Rubric:**
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Two weak assumptions identified with specifics | 5 | Each assumption is named precisely, not "we don't know if it works" |
-| Experiments are actionable | 5 | Each experiment describes what you would measure, for how long, with what success criterion |
+| Two weak assumptions named precisely | 5 | Each is a specific causal link between two named metrics, and is falsifiable |
+| Experiments are actionable | 5 | Each states metric, population, duration, and success criterion |
+
+---
+
+## Traps Already Mapped — do not rediscover
+
+1. **Cost Explorer will report $0.00 for a month in which you ran the entire platform.** Free tier absorbs it. Use `--metrics UsageQuantity`, never `UnblendedCost`, and build dollars from the rate card.
+2. **Cost Explorer takes up to 24 hours to prepare data after first activation.** Enable it the day before, not the hour before.
+3. **An IAM user may be denied billing data** until the root user activates IAM access to billing. You cannot fix this from the IAM user, and it is not a permissions policy you can attach.
+4. **The `pricing` API endpoint exists only in `us-east-1` and `ap-south-1`.** `--region` selects the endpoint; the `regionCode` filter selects what you are pricing. They are different things.
+5. **The Price List API returns one pricing tier and does not tell you it is the wrong one.** `CW:MetricMonitorUsage` returns $0.02 (the over-1M-metrics tier) when your actual rate is $0.30. Always read the `description` field.
+6. **Bedrock output-token prices are absent from the Price List API** in us-east-1, and its Claude model coverage is stale. Use the pricing page and cite the date.
+7. **Failed jobs bill.** The reference account spent more instance time on one analyzer run that ran out of memory (13 min 42 s) than on the one that succeeded (5 min 45 s). Cost models built from successful runs are optimistic by construction.
+8. **The 18%/year case figure and the 22.0% dataset figure are not the same quantity.** Different population, different window. Mixing them produces confident nonsense.
+9. **The churn label looks forward 90 days; several features look back 30.** They sit in the same feature table and are easy to conflate. Any measurement window shorter than 90 days reports outcomes that have not happened yet.
+10. **`ModelLatency` is in microseconds** (carried from Lab 6). If you cite latency in a cost or SLO context, cite the unit.
+11. **A real-time endpoint bills 24×7 for a weekly batch workload.** Both Lab 5 and Lab 6 built one, deliberately, because they were teaching deployment and monitoring. Whether that is the right architecture for *this* workload is a Task 2d question, and it has a large answer.
+12. **Recall@10% is capped near 0.45** by the base rate and the decile constraint — you cannot retrieve more churners than fit in the 10% of the population you are allowed to contact. Any business projection implying recall above that ceiling is arithmetically impossible, not merely optimistic.
+
+## Teardown
+
+**Lab 7 creates nothing.** But it is the last lab, and the teardown gate from Labs 2–6 still applies to everything you built earlier.
+
+Before you submit, run the all-region sweep one final time and confirm the account is clean:
+
+```bash
+bash scripts/teardown-lab6.sh    # idempotent; safe to run when nothing is left
+```
+
+Then confirm independently, in every region you have ever touched, that there are no:
+
+- SageMaker endpoints, endpoint configs, or models
+- Monitoring schedules or in-flight processing jobs
+- Application Auto Scaling scalable targets
+- CloudWatch anomaly detectors *(these survive `terraform destroy` — check for them explicitly)*
+- NAT gateways or unattached Elastic IPs
+
+**An endpoint still running after the semester deadline is a 10-point deduction on this lab**, on top of whatever it costs you. Custom CloudWatch metrics cannot be deleted and expire after 15 months of no data; that is expected and already accounted for.
 
 ## Final Notes
 
 **The platform you built across these seven labs covers:**
+
 - Infrastructure as Code on AWS (Lab 1)
 - Production data pipelines and a feature store (Lab 2)
 - Three AI system types: traditional ML, RAG/LLM, and agentic (Lab 3)
 - Automated model lifecycle with CI/CD and testing (Lab 4)
-- Production deployment with security and privacy documentation (Lab 5)
-- Five-layer monitoring, SLOs, and incident runbooks (Lab 6)
+- Production deployment with canary rollout, rollback, and security documentation (Lab 5)
+- Five-layer monitoring, SLOs, error budgets, and incident runbooks (Lab 6)
 - Economic analysis and business value measurement (Lab 7)
+
+If you take one thing from Lab 7, take this: **the cost side of an AI business case can be computed to three decimal places, and the value side usually rests on a single parameter nobody has measured.** In this platform, the entire ROI turns on the retention offer's save rate — a number that appears in no dashboard, no model card, and no AWS bill. The engineering discipline that matters most at this level is knowing which of your numbers are measured and which are assumed, and never letting the second kind be mistaken for the first.
 
 **The team project** extends this platform with AI governance, closing-the-loop feedback mechanisms, and a new AI system of your team's choosing. Use the NorthStar platform as your architecture reference.
 

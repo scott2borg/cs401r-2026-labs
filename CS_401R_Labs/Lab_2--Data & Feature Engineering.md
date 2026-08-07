@@ -7,7 +7,7 @@
 
 ## Objective
 
-Extend the NorthStar platform in two directions. First, harden the infrastructure left intentionally simple in Lab 1: move SageMaker into a private subnet behind a NAT Gateway, add the DataEngineer and ModelMonitor IAM roles, and add S3 lifecycle rules. Second, build the data pipeline that feeds the ML platform: raw data lands in S3, Glue crawls and transforms it, engineered features are written to SageMaker Feature Store.
+Extend the NorthStar platform in two directions. First, harden the infrastructure left intentionally simple in Lab 1: move SageMaker into a private subnet behind a NAT Gateway, add the DataEngineer and ModelMonitor IAM roles, and add S3 lifecycle rules. Second, build the data pipeline that feeds the ML platform: raw data lands in S3, Glue crawls and transforms it, and engineered features are written to SageMaker Feature Store.
 
 By the end of this lab, you will have a working end-to-end data pipeline: raw customer event data → cleaned and transformed records → feature vectors in Feature Store → ready for model training in Lab 3.
 
@@ -130,10 +130,12 @@ Lifecycle rules *(new in Lab 2)*:
 - Trust: `sagemaker.amazonaws.com`
 - Allowed:
   - CloudWatch: `PutMetricData`, `GetMetricStatistics`, `PutMetricAlarm`, `DescribeAlarms`
-  - SageMaker Model Monitor: create/manage/delete monitoring schedules
+  - SageMaker: `ListProcessingJobs`, `DescribeProcessingJob` — **read-only visibility into drift runs**
   - S3: read-only on `artifacts/` prefix
   - CloudWatch Logs: write
-- Denied by omission: cannot invoke endpoints; cannot write to S3; cannot modify models
+- Denied by omission: cannot invoke endpoints; cannot write to S3; cannot modify models; **cannot start a processing job** — that is `ModelMonitorExecution`'s job, not this one
+
+> **This role observes; it does not act.** The distinction matters in Lab 6, where the drift analysis runs under `northstar-dev-ModelMonitorExecution` (which writes reports and pulls containers) while this role only watches. A drift alarm that cannot itself remediate is a design choice, not an oversight.
 
 ---
 
@@ -219,13 +221,13 @@ Lifecycle rules *(new in Lab 2)*:
 **Crawler — `northstar-dev-raw-crawler`** *(new in Lab 2)*
 - Role: `northstar-dev-DataEngineer`
 - Target: S3 `raw/customers/` prefix
-- Output: table `raw_customers` in `northstar_dev` database
+- Output: table `customers` in `northstar_dev` database — the crawler names the table after the S3 prefix (`raw/customers/`) and no `TablePrefix` is set, so it is **`customers`, not `raw_customers`**
 - Schedule: on-demand (run manually or trigger from ingestion)
 
 **ETL Job — `northstar-dev-transform`** *(new in Lab 2)*
 - Type: Glue Spark (Python shell for smaller datasets)
 - Role: `northstar-dev-DataEngineer`
-- Source: `northstar_dev.raw_customers` (via Glue catalog)
+- Source: `northstar_dev.customers` (via Glue catalog)
 - Transforms: type casting, null imputation, deduplication, timestamp normalization
 - Sink: `processed/customers/` in S3 as Parquet
 
@@ -260,8 +262,8 @@ Draw this as two layers: infrastructure (VPC/network) and data flow (S3/Glue/Fea
 |------|----|-----------|-------|
 | Source data (external) | S3 `raw/customers/` | → | CSV upload |
 | Raw Crawler | S3 `raw/customers/` | → | scans schema |
-| Raw Crawler | Glue Catalog `raw_customers` | → | registers table |
-| Transform Job | Glue Catalog `raw_customers` | → | reads |
+| Raw Crawler | Glue Catalog `customers` | → | registers table |
+| Transform Job | Glue Catalog `customers` | → | reads |
 | Transform Job | S3 `processed/customers/` | → | writes Parquet |
 | Feature Engineer Job | S3 `processed/customers/` | → | reads |
 | Feature Engineer Job | S3 `features/customers/` | → | writes Parquet |
@@ -284,7 +286,7 @@ Draw this as two layers: infrastructure (VPC/network) and data flow (S3/Glue/Fea
 
 ## Starter Kit (Canvas: Lab 2)
 
-- `northstar-raw-sample.csv` — roughly 19,500 synthetic **transaction** rows across 1,200 customers, spanning 2025-04-01 to 2026-06-30. Deliberately dirty: null `customer_id` values, duplicate `transaction_id` rows, mixed date formats, missing numeric fields, and stray whitespace — Task 2 is where you clean them.
+- `northstar-raw-sample.csv` — roughly 163,000 synthetic **transaction** rows across ~11,400 customers, spanning 2025-04-01 to 2026-06-30. Deliberately dirty: null `customer_id` values, duplicate `transaction_id` rows, mixed date formats, missing numeric fields, and stray whitespace — Task 2 is where you clean them. After cleaning, expect ~157,600 rows; ~10,000 customers have enough history in the observation window to carry features.
 
   The date range is not arbitrary. It covers an observation window (to 2026-04-01) and a 90-day holdout after it, which is what makes the churn label in Task 3 possible. About 21% of customers churn, and roughly a third of those are still buying right up to the cutoff — those are the ones a recency rule will miss.
 
@@ -327,7 +329,7 @@ All infrastructure changes in this lab are made through Terraform. Do not use th
 
 ### Task 1 — Extend Platform Infrastructure (25 points)
 
-Modify your existing Terraform modules and apply the changes to real AWS.
+Modify your existing Terraform modules and apply the changes to a real AWS account.
 
 **Changes to `modules/vpc/`:**
 - Add `aws_subnet` (private, `10.0.1.0/24`, `us-east-1a`, no public IP)
@@ -380,7 +382,7 @@ make local-validate 2>&1 | tee docs/lab2-localstack-output.txt
 |------|--------|---------------|
 | Private subnet + NAT Gateway created; SageMaker Domain moved to private subnet | 10 | Console: Domain InService, subnet ID matches `northstar-dev-private-1`; NAT Gateway Available |
 | All 3 IAM roles exist with correct trust and policies | 8 | `aws iam list-roles` shows all 3; `iam:SimulatePrincipalPolicy` confirms DataEngineer cannot **write** `artifacts/` (read on `artifacts/glue/` is expected — Glue fetches job scripts there), ModelMonitor cannot write S3 |
-| S3 lifecycle rules applied | 4 | `aws s3api get-bucket-lifecycle-configuration` returns all 4 rules |
+| S3 lifecycle rules applied | 4 | `aws s3api get-bucket-lifecycle-configuration` returns all 5 rules: `expire-raw-data`, `expire-raw-versions`, `expire-processed-versions`, `expire-feature-versions`, `expire-datacapture` |
 | LocalStack validation updated and passing | 3 | `docs/lab2-localstack-output.txt` shows 3 IAM roles; VPC exists (NAT skipped) |
 
 ---
@@ -465,7 +467,7 @@ aws glue start-crawler --name northstar-dev-raw-crawler
 aws glue get-crawler --name northstar-dev-raw-crawler --query 'Crawler.State'
 
 # Verify the table was created
-aws glue get-table --database-name northstar_dev --name raw_customers
+aws glue get-table --database-name northstar_dev --name customers
 
 # Run the transform job
 aws glue start-job-run --job-name northstar-dev-transform
@@ -481,7 +483,7 @@ aws s3 ls s3://northstar-dev-data-ACCOUNT_ID/processed/customers/ --recursive
 
 | Item | Points | Pass Criteria |
 |------|--------|---------------|
-| Glue catalog database and `raw_customers` table exist after crawler run | 6 | `aws glue get-table --database-name northstar_dev --name raw_customers` returns schema |
+| Glue catalog database and `customers` table exist after crawler run | 6 | `aws glue get-table --database-name northstar_dev --name customers` returns schema |
 | Transform script correctly casts types, imputes nulls, deduplicates | 12 | `verify-lab2.sh` runs assertions against `processed/customers/` output: correct Parquet schema, 0 null `customer_id` rows, no duplicate `customer_id` rows |
 | `modules/glue/` Terraform resources applied cleanly | 4 | Module present in repo; `terraform apply` creates crawler and job with 0 errors |
 | Transform job completes with SUCCEEDED status | 3 | `aws glue get-job-run` returns `JobRunState: SUCCEEDED` |

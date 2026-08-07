@@ -17,7 +17,9 @@
 #         GitHubRepo=northstar-ai-platform \
 #         GitHubBranch=main \
 #         ArtifactsBucket=northstar-dev-artifacts \
-#     --capabilities CAPABILITY_IAM
+#         GitHubConnectionArn=arn:aws:codeconnections:us-east-1:<acct>:connection/<id> \
+#         SageMakerRoleArn=<ml_engineer_role_arn> \
+#     --capabilities CAPABILITY_NAMED_IAM
 
 AWSTemplateFormatVersion: "2010-09-09"
 Description: NorthStar AI Platform - CI/CD Pipeline Stack
@@ -67,6 +69,25 @@ Parameters:
       parameter, so the stack failed at parameter resolution. Pass the ARN
       directly, or create the SSM parameter yourself and switch the type back.
 
+  GitHubConnectionArn:
+    Type: String
+    Description: >-
+      ARN of an ALREADY-AUTHORIZED CodeStar/CodeConnections connection to GitHub.
+      This template used to CREATE the connection instead of taking it, which
+      could never work. A connection created by CloudFormation is always born
+      PENDING, and PENDING connections can only be completed by a human in the
+      console -- so the stack came up "successfully" with a source stage that
+      could never pull. Worse, it hardcoded the name northstar-github, which
+      already exists on this account, so a second create fails outright.
+      Create and authorize the connection ONCE, then pass it here:
+        aws codeconnections create-connection \
+          --provider-type GitHub --connection-name northstar-github
+        # then authorize it in the console: Developer Tools -> Settings ->
+        # Connections -> northstar-github -> Update pending connection
+        aws codeconnections list-connections \
+          --query "Connections[?ConnectionName=='northstar-github'].ConnectionArn" --output text
+      It must read AVAILABLE before the pipeline will run.
+
   SageMakerPipelineName:
     Type: String
     Default: northstar-churn-pipeline
@@ -103,10 +124,32 @@ Resources:
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}-*"
               - Effect: Allow
                 Action:
+                  # The build now UPSERTS the pipeline before starting it, so
+                  # create/update/describe are required, not just start. Without
+                  # these the build fails at the upsert with AccessDenied.
+                  - sagemaker:CreatePipeline
+                  - sagemaker:UpdatePipeline
+                  - sagemaker:DescribePipeline
                   - sagemaker:StartPipelineExecution
                   - sagemaker:DescribePipelineExecution
                   - sagemaker:ListPipelineExecutionSteps
                 Resource: !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:pipeline/${SageMakerPipelineName}*"
+              - Effect: Allow
+                Action:
+                  # RegisterModel creates a model package in this group, and the
+                  # group itself must exist before the first registration.
+                  - sagemaker:CreateModelPackageGroup
+                  - sagemaker:DescribeModelPackageGroup
+                  - sagemaker:CreateModelPackage
+                  - sagemaker:DescribeModelPackage
+                  - sagemaker:ListModelPackages
+                Resource: !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:model-package*/*"
+              - Effect: Allow
+                Action:
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:CreateModel
+                Resource: !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:*"
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -150,7 +193,12 @@ Resources:
             Value: !Ref SageMakerPipelineName
           - Name: AWS_REGION
             Value: !Ref AWS::Region
-          # Bucket names pulled from Parameter Store in buildspec.yml
+          # buildspec.yml passes this to pipeline_definition.py --role-arn.
+          # It is the role the TRAINING JOB assumes, not the CodeBuild role.
+          - Name: SAGEMAKER_ROLE_ARN
+            Value: !Ref SageMakerRoleArn
+          # Bucket names are derived in buildspec.yml as
+          # ${PROJECT}-${ENVIRONMENT}-data-${ACCOUNT_ID}, not read from SSM.
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
@@ -196,17 +244,101 @@ Resources:
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
-                Resource: !Ref GitHubConnection
+                  - codeconnections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref ModelApprovalTopic
 
-  # ── GitHub Connection (CodeStar) ────────────────────────────────────────────
-  # After deploying this stack, you must manually complete the connection in the
-  # AWS Console: Developer Tools → Settings → Connections → Activate
+  # ── Model approval notifications ────────────────────────────────────────────
+  # The ManualApproval stage below publishes here. This topic did not exist in
+  # any template, Terraform module or script -- `aws sns list-topics` returned
+  # empty on the reference account -- so the approval action referenced an ARN
+  # that was never created and the stage failed at runtime.
 
-  GitHubConnection:
-    Type: AWS::CodeStarConnections::Connection
+  ModelApprovalTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      ConnectionName: !Sub "${ProjectName}-github"
-      ProviderType: GitHub
+      TopicName: !Sub "${ProjectName}-model-approvals"
+      DisplayName: NorthStar model promotion approvals
+
+  ModelApprovalTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref ModelApprovalTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Sids are mandatory once there is more than one statement: SNS
+          # rejects the policy with "Every policy statement must have a unique
+          # ID" and the stack update rolls back.
+          - Sid: AllowCodePipelineApprovalNotifications
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref ModelApprovalTopic
+          # cloudwatch.amazonaws.com is NOT optional, and leaving it out fails
+          # silently in the worst possible way. Without it the build-failure
+          # alarm evaluates correctly, transitions to ALARM on cue, turns the
+          # console red -- and cannot publish. The only trace is one line in
+          # `aws cloudwatch describe-alarm-history --history-item-type Action`:
+          #     Failed to execute action arn:aws:sns:...:northstar-model-approvals
+          # Nothing surfaces on the alarm itself, nothing on the topic. An alarm
+          # that fires and cannot notify is worse than no alarm, because it
+          # looks like coverage. Verified 2026-08-04 (defect 74).
+          - Sid: AllowCloudWatchAlarmNotifications
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref ModelApprovalTopic
+
+  # ── Build-failure alarm ─────────────────────────────────────────────────────
+  # Task 2 requires that a failed gate does not just halt the build but tells
+  # somebody. Nothing wired this until 2026-08-04.
+  #
+  # This alarm watches AWS/CodeBuild's built-in FailedBuilds, and the reason is
+  # a correction worth reading. The first implementation used a custom metric
+  # published from buildspec.yml's post_build phase, on the assumption that
+  # post_build always runs. IT DOES NOT. Verified 2026-08-04 with a deliberate
+  # failing test: when PRE_BUILD fails, CodeBuild goes straight to FINALIZING
+  # and POST_BUILD never executes at all -- so the alarm stayed OK through a
+  # failed run, which is precisely the case the rubric names. (post_build does
+  # run when the BUILD phase fails, which is where that belief comes from.)
+  #
+  # FailedBuilds is emitted by CodeBuild itself regardless of which phase
+  # failed, so it cannot be skipped by the failure it is meant to report.
+  # Confirmed emitted for the pre_build failure above.
+
+  BuildFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ci-build-failure"
+      AlarmDescription: >-
+        A NorthStar CI build failed. Either a test failed, or the model quality
+        gate rejected the candidate -- it did not beat the recency-only
+        baseline with a confidence interval excluding zero. Nothing was
+        registered. Check the NorthStar/CI BuildSucceeded metric to tell the
+        two apart: absent means it failed before the gate ran.
+      Namespace: AWS/CodeBuild
+      MetricName: FailedBuilds
+      Dimensions:
+        - Name: ProjectName
+          Value: !Ref CodeBuildProject
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # notBreaching so quiet periods read OK rather than INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref ModelApprovalTopic
+      OKActions:
+        - !Ref ModelApprovalTopic
 
   # ── CodePipeline ────────────────────────────────────────────────────────────
 
@@ -231,7 +363,7 @@ Resources:
                 Provider: CodeStarSourceConnection
                 Version: "1"
               Configuration:
-                ConnectionArn: !Ref GitHubConnection
+                ConnectionArn: !Ref GitHubConnectionArn
                 FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepo}"
                 BranchName: !Ref GitHubBranch
                 OutputArtifactFormat: CODE_ZIP
@@ -269,7 +401,7 @@ Resources:
                 Version: "1"
               Configuration:
                 # TODO: Replace with your team's email subscription ARN
-                NotificationArn: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-model-approvals"
+                NotificationArn: !Ref ModelApprovalTopic
                 CustomData: |
                   Review model metrics before approving for production deployment.
                   Check: AUC-ROC ≥ 0.72, Precision@Top10 ≥ 0.40
@@ -308,10 +440,10 @@ Outputs:
     Export:
       Name: !Sub "${ProjectName}-codebuild-project"
 
-  GitHubConnectionArn:
-    Value: !Ref GitHubConnection
-    Description: |
-      ⚠️  ACTION REQUIRED: Complete this GitHub connection in the AWS Console.
-      Go to: Developer Tools → Settings → Connections → northstar-github → Activate
+  ModelApprovalTopicArn:
+    Value: !Ref ModelApprovalTopic
+    Description: >-
+      Subscribe an address to this topic or approvals go unnoticed:
+        aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint you@example.com
     Export:
-      Name: !Sub "${ProjectName}-github-connection"
+      Name: !Sub "${ProjectName}-model-approvals-topic"

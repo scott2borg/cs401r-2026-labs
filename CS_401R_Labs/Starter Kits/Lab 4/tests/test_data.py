@@ -126,7 +126,27 @@ class TestRawData:
         assert not missing, f"Raw CSV missing columns: {missing}"
 
     def test_row_count_plausible(self, raw_df):
-        assert 5_000 < len(raw_df) < 60_000, f"Unexpected raw row count: {len(raw_df)}"
+        """Shape, not absolute size.
+
+        This used to assert `5_000 < len(raw_df) < 60_000`, a bound derived from
+        the retired 1,200-customer sample. The 2026-08-02 rebase to 10,000
+        customers produced 163,255 raw rows and this test failed on the
+        correct dataset (defect 51).
+
+        Transactions-per-customer is the property actually worth asserting: it
+        survives any regeneration of the sample at a different `--customers`
+        value, which an absolute row count cannot.
+        """
+        n = len(raw_df)
+        customers = raw_df["customer_id"].nunique()
+        assert n > 5_000, f"Raw file is implausibly small: {n} rows"
+        per_customer = n / max(customers, 1)
+        assert 5 < per_customer < 40, (
+            f"Raw file averages {per_customer:.1f} transactions per customer "
+            f"({n:,} rows / {customers:,} customers). The generator produces "
+            f"~14. A value outside [5, 40] means the sample was generated with "
+            f"different parameters than the labs assume."
+        )
 
     def test_contains_defects_to_clean(self, raw_df):
         nulls = raw_df["customer_id"].isna().sum()

@@ -64,7 +64,7 @@ Create all four prefixes now. They will be used starting in Lab 2.
   - ECR: read (pull training container images)
 - Denied by omission: cannot write to `raw/` or `processed/`
 
-> **Note:** `northstar-dev-DataEngineer` and `northstar-dev-ModelMonitor` roles are added in Lab 2, when the services those roles govern (Glue, Lambda, CloudWatch Model Monitor) are introduced.
+> **Note:** `northstar-dev-DataEngineer` and `northstar-dev-ModelMonitor` roles are added in Lab 2, when the services those roles govern (Glue, Lambda, CloudWatch) are introduced.
 
 
 ##### Regional Service: Amazon SageMaker

@@ -72,14 +72,14 @@ Deploy the churn model approved above.
   - *Batch Transform, parallel run:* the new model runs as a **shadow job over the same input manifest** as the incumbent; you compare score distributions and disagreement rate before the new model's output feeds anything downstream. There is no traffic weight in batch — the parallel run and the comparison artifact are what earn the points.
 - **Rollback trigger configured with a numeric threshold** — specify the metric and the value. The trigger must exist **as code** in `deployment/configs/` (a CloudWatch alarm definition, Terraform resource, or deployment config), not only as prose in the plan. A threshold nobody wired up is a paragraph, not a control.
 
-  > **`ModelLatency` is emitted in MICROSECONDS, not milliseconds.** A 200 ms threshold is `200000`. Writing `200` sets the alarm to 0.2 ms, which is far below a healthy endpoint's normal latency — measured at roughly **4,100 µs (4.1 ms)** on `ml.m5.large` for this model. The alarm goes to `ALARM` immediately and stays there, and a rollback wired to it fires against a perfectly healthy deployment. Both behaviours verified on AWS. Check the `Unit` field in `get-metric-statistics` output before you pick any threshold.
+  > **`ModelLatency` is emitted in MICROSECONDS, not milliseconds.** A 200 ms threshold is `200000`. Writing `200` sets the alarm to 0.2 ms, which is far below a healthy endpoint's normal latency — measured at roughly **4,100 µs (4.1 ms)** on `ml.m5.large` for this model. The alarm goes to `ALARM` immediately and stays there, and a rollback wired to it fires against a perfectly healthy deployment. Both behaviors verified on AWS. Check the `Unit` field in `get-metric-statistics` output before you pick any threshold.
 
-- **Rollback action.** The canary rollback is `update-endpoint-weights-and-capacities` setting the canary to weight 0. It takes about **90 seconds**, the endpoint reports `Updating` throughout but keeps serving with no dropped requests, and it does **not** stop the canary instance billing.
+- **Rollback action.** The canary rollback is `update-endpoint-weights-and-capacities` setting the canary to weight 0. It takes about **90 seconds**; the endpoint reports `Updating` throughout but keeps serving with no dropped requests, and it does **not** stop the canary instance billing.
 - **Auto-scaling policy (real-time only):** target tracking on `SageMakerVariantInvocationsPerInstance` at 1000, scale-out cooldown 60s, scale-in cooldown 600s.
 
   **Start on `ml.t2.medium`.** It is the cheapest real-time instance at $0.056/hr, and it is one of only three endpoint types your new AWS account has any quota for. Deploy the canary, observe the traffic split, wire the rollback alarm — all of that works.
 
-  Then try to attach the auto-scaling policy. **It will fail**, and working out why is part of this task. See *Instance selection and quota* below before you start, so you can plan around it rather than discover it at 2am.
+  Then try to attach the auto-scaling policy. **It will fail**, and working out why is part of this task. See *Instance selection and quota* below before you start, so you can plan around it rather than discover it at 2 am.
 - **Compressed monitoring window.** Your *plan* documents the production cadence — a 48-hour canary window before promotion. Your *lab execution* observes for **60 minutes**, then promotes or rolls back. State the compression explicitly in the plan: what a 48-hour window would catch that 60 minutes cannot, and what you would additionally monitor in a real rollout. You are graded on identifying the gap, not on burning two days of endpoint time.
 - **Everything deleted after the window closes and before submission.** See Teardown.
 
@@ -114,9 +114,9 @@ ValidationException: You cannot register a variant with
 ml.t2.medium instance type as a scalable target.
 ```
 
-This is not a bug in your configuration and there is no flag that fixes it. Burstable instances (`ml.t2.*`, `ml.t3.*`) accumulate CPU credits rather than delivering sustained performance, so Application Auto Scaling refuses to manage them — a scaling decision based on a credit-throttled instance would be meaningless. The fix is to move to a non-burstable instance type, and the obvious candidate is `ml.m5.large`.
+This is not a bug in your configuration, and there is no flag that fixes it. Burstable instances (`ml.t2.*`, `ml.t3.*`) accumulate CPU credits rather than delivering sustained performance, so Application Auto Scaling refuses to manage them — a scaling decision based on a credit-throttled instance would be meaningless. The fix is to move to a non-burstable instance type, and the obvious candidate is `ml.m5.large`.
 
-Note what this cost you: the endpoint deployed *fine*, served traffic *fine*, and failed only at the very last step — **after it had already been billing for several minutes.** A capability you assume is available because the resource looks healthy is a category of production failure worth internalising.
+Note what this cost you: the endpoint deployed *fine*, served traffic *fine*, and failed only at the very last step — **after it had already been billing for several minutes.** A capability you assume is available because the resource looks healthy is a category of production failure worth internalizing.
 
 **Wall 2 — your account almost certainly has zero quota for `ml.m5.large`.**
 
@@ -125,7 +125,7 @@ You switch the instance type, redeploy, and get:
 ```
 ResourceLimitExceeded: The account-level service limit
 'ml.m5.large for endpoint usage' is 0 Instances, with current
-utilization of 0 Instances and a request delta of 1 Instances.
+utilization of 0 Instances and a request delta of 1 Instance.
 ```
 
 **This is expected. It is not a mistake you made.**
@@ -170,7 +170,7 @@ You can also do this in the console: **Service Quotas → AWS services → Amazo
 
 **If your increase has not landed in time**, deploy on `ml.t2.medium`, capture the `register-scalable-target` rejection and your pending quota request as evidence, and write up the scaling design you *would* have applied. See the rubric — **this path earns full credit on the auto-scaling item.** You are graded on diagnosing and responding to the constraint, not on winning a race with AWS Support.
 
-**A note for Lab 6.** Whatever instance you land on, **enable `DataCaptureConfig`** — Lab 6's monitoring has nothing to analyse without it, and endpoint configs are immutable so it cannot be added later without a redeploy. `ml.t2.medium` supports data capture fully, so an unresolved quota request does not block Lab 6.
+**A note for Lab 6.** Whatever instance you land on, **enable `DataCaptureConfig`** — Lab 6's monitoring has nothing to analyze without it, and endpoint configs are immutable so it cannot be added later without a redeploy. `ml.t2.medium` supports data capture fully, so an unresolved quota request does not block Lab 6.
 
 **Rubric:**
 

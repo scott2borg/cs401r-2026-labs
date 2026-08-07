@@ -93,6 +93,40 @@ If the file is missing or empty, run `aws configure` again. boto3 reads from the
 
 ---
 
+## If you already use AWS for something else — named profiles
+
+`aws configure` with no arguments writes to the `[default]` profile. If you already have AWS credentials on this machine for a job, an internship, or a personal project, **that command will overwrite them.**
+
+Use a named profile instead:
+
+```bash
+aws configure --profile cs401r
+```
+
+Then tell every command which profile to use, either per-command or for the whole shell session:
+
+```bash
+export AWS_PROFILE=cs401r        # applies to the rest of this terminal session
+aws sts get-caller-identity      # should now show YOUR course account
+```
+
+**boto3 reads `AWS_PROFILE` too**, so Python scripts pick it up with no code change. Anything in this course that works with `[default]` works identically with a named profile.
+
+Two things to watch:
+
+- `export AWS_PROFILE` lasts only for that terminal window. A new tab is back to `[default]`. If a script suddenly reports the wrong account, this is almost always why.
+- Verify which identity you are actually using **before** creating anything billable:
+
+```bash
+aws sts get-caller-identity --query '[Account,Arn]' --output text
+```
+
+Deploying a SageMaker endpoint into the wrong account is an expensive way to discover a profile mistake.
+
+> **Note for TAs:** the reference environment does **not** use `[default]` — it uses `AWS_PROFILE=terraform-user`. Reproducing a student's result on the reference account requires setting that explicitly. Student instructions above are correct for a fresh account and should not be changed to match the reference setup.
+
+---
+
 ## Verify Everything is Working
 
 ```bash

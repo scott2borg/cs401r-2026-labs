@@ -20,13 +20,15 @@
 
 ## The AI Initiative
 
-NorthStar's Chief Data Officer, Maya Chen, has commissioned an AI platform to address a $140M annual problem: customer churn. Analysis shows that NorthStar loses approximately 18% of its active customer base each year to inactivity. Each churned customer represents ~$340 in lost lifetime value.
+NorthStar's Chief Data Officer, Maya Chen, has commissioned an AI platform to address a **$128.5M annual problem**: customer churn. Analysis shows that NorthStar loses approximately **18%** of its active customer base each year to inactivity. Each churned customer represents ~**$340** in lost lifetime value.
+
+That headline figure is simply the product of the three numbers above, and you are expected to be able to reproduce it: 2.1M active customers × 18% × $340 = **$128.5M**. Use these figures for every business calculation in the course. Where a lab asks you to size value, cost, or ROI, it should reconcile to this arithmetic.
 
 The CDO has prioritized three interconnected AI systems:
 
 ### System 1: Churn Prediction Model
 **Problem:** NorthStar cannot identify at-risk customers until after they have already left.
-**Solution:** A batch ML model that scores every active customer weekly, predicting 30-day churn probability.
+**Solution:** A batch ML model that scores every active customer weekly, predicting **90-day** churn probability — the likelihood that a customer goes silent over the 90 days following the scoring date.
 **Business Goal:** Enable proactive outreach before churn occurs, targeting the top 10% highest-risk customers with retention offers.
 **Success Metric:** Reduce 12-month churn rate from 18% to 14% within one year of deployment.
 
