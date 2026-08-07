@@ -4,13 +4,25 @@ CS 401R Lab 3 Starter Kit
 
 This script is the SageMaker XGBoost training entry point for the NorthStar
 churn prediction model. It reads features from the SageMaker Feature Store,
-trains an XGBoost classifier, and registers the model in the Model Registry.
+trains an XGBoost classifier, tracks the run in a SageMaker MLflow App, and
+registers the model in the Model Registry.
+
+Experiment tracking needs two packages that are NOT in the training container:
+
+    pip install mlflow sagemaker-mlflow
+
+`sagemaker-mlflow` is the SigV4 auth plugin for arn:aws:sagemaker:... tracking
+URIs. Install `mlflow` alone and you get a connection error that never mentions
+credentials. See track_run() for the cost warning about the OTHER MLflow
+product -- read it before you create anything.
 
 Usage (local testing):
     python churn_training_skeleton.py \
         --feature-group-name northstar-churn-features \
         --artifacts-bucket northstar-dev-artifacts \
-        --max-depth 6 --eta 0.1 --num-round 200
+        --max-depth 6 --eta 0.1 --num-round 200 \
+        --mlflow-arn arn:aws:sagemaker:us-east-1:<account>:mlflow-app/app-XXXX \
+        --run-name xgb-depth6-eta0.1
 
 Usage (SageMaker training job — parameters passed via hyperparameter dict):
     Configured via the SageMaker Python SDK Estimator.
@@ -95,6 +107,22 @@ def parse_args():
                             "tuned for a different class balance will quietly skew your "
                             "precision/recall trade-off, so only override this deliberately."
                         ))
+    # Experiment tracking (Task 1, 5 points)
+    parser.add_argument("--mlflow-arn", type=str,
+                        default=os.environ.get("MLFLOW_APP_ARN"),
+                        help=(
+                            "ARN of your SageMaker MLflow APP, e.g. "
+                            "arn:aws:sagemaker:us-east-1:<account>:mlflow-app/app-XXXX. "
+                            "Create it once with `aws sagemaker create-mlflow-app`. "
+                            "This is NOT an MLflow Tracking Server -- see the warning "
+                            "on track_run() below. Omit to skip tracking."
+                        ))
+    parser.add_argument("--mlflow-experiment", type=str, default="northstar-churn",
+                        help="MLflow experiment name; runs group under this")
+    parser.add_argument("--run-name", type=str, default=None,
+                        help="Name for this run. Make it descriptive -- 'run3' tells "
+                             "you nothing three weeks later.")
+
     parser.add_argument("--model-dir", type=str,
                         default=os.environ.get("SM_MODEL_DIR", "./model"))
     parser.add_argument("--output-data-dir", type=str,
@@ -324,6 +352,13 @@ def train_model(X_train: np.ndarray,
     # On the reference dataset this lands at 3.545.
     spw = (args.scale_pos_weight if args.scale_pos_weight is not None
            else float((y_train == 0).sum() / max((y_train == 1).sum(), 1)))
+
+    # Record the RESOLVED value so track_run() can log what was actually used.
+    # Logging args.scale_pos_weight instead would log None on every run that
+    # let it compute itself -- which is most of them -- and your MLflow
+    # comparison would be missing the one parameter most likely to explain a
+    # precision/recall difference between runs.
+    args.resolved_scale_pos_weight = spw
 
     params = {
         # eval_metric ORDER MATTERS. XGBoost early-stops on the LAST metric in
@@ -556,6 +591,81 @@ def evaluate_slices(model: xgb.Booster,
     return slice_results
 
 
+# ── Experiment Tracking (MLflow App) ───────────────────────────────────────────
+
+def track_run(args, metrics: dict, scale_pos_weight: float) -> None:
+    """
+    Log this training run to your SageMaker MLflow App.
+
+    Worth 5 points in Task 1: >=3 runs, each with logged params AND metrics,
+    retrievable via mlflow.search_runs.
+
+    ###########################################################################
+    #  THERE ARE TWO MLflow PRODUCTS ON SAGEMAKER. USE THE APP.               #
+    #                                                                         #
+    #    CreateMlflowApp            serverless   NO ADDITIONAL CHARGE   <-- ok #
+    #    CreateMlflowTrackingServer $0.60/hour   until you delete it    <-- NO #
+    #                                                                         #
+    #  $0.60/hr breaches the entire $10 course budget in 16.7 hours and costs #
+    #  about $43 over a weekend -- more per hour than any endpoint in this    #
+    #  course. It is not an endpoint, so "did I delete my endpoints?" will    #
+    #  not find it. Most tutorials describe the Tracking Server because it    #
+    #  shipped first. If anything asks you to choose a size (Small/Medium),   #
+    #  you are on the wrong product.                                          #
+    ###########################################################################
+
+    Two things that fail in ways the error does not explain:
+
+      1. `create-mlflow-app` postdates many installed AWS CLIs. An old CLI
+         says "Invalid choice: 'create-mlflow-app'", which reads like a typo
+         rather than a version problem. Check `aws --version` and upgrade.
+
+      2. You need BOTH `mlflow` and `sagemaker-mlflow` installed. The second
+         is the SigV4 auth plugin for arn:aws:sagemaker:... tracking URIs.
+         Without it you get a connection error that never mentions credentials.
+
+    TODO: Implement this function.
+    """
+    if not args.mlflow_arn:
+        print("\n(no --mlflow-arn given; skipping experiment tracking)")
+        return
+
+    # TODO: log this run to the MLflow App.
+    #
+    # import mlflow
+    #
+    # mlflow.set_tracking_uri(args.mlflow_arn)   # the App ARN, verbatim
+    # mlflow.set_experiment(args.mlflow_experiment)
+    #
+    # with mlflow.start_run(run_name=args.run_name):
+    #     mlflow.log_params({
+    #         "max_depth": args.max_depth,
+    #         "eta": args.eta,
+    #         "num_round": args.num_round,
+    #         "min_child_weight": args.min_child_weight,
+    #         "subsample": args.subsample,
+    #         "colsample_bytree": args.colsample_bytree,
+    #         "scale_pos_weight": scale_pos_weight,
+    #         "xgboost_version": xgb.__version__,   # see below -- this matters
+    #     })
+    #     mlflow.log_metrics({
+    #         k: v for k, v in metrics.items() if isinstance(v, (int, float))
+    #     })
+    #
+    # LOG THE XGBOOST VERSION AS A PARAM. Lab 3 documents that identical data
+    # and an identical split produce different metrics on XGBoost 3.2.0 vs 1.7
+    # (the SageMaker training container is 1.7). If you train some runs locally
+    # and some through SageMaker and do not record the version, you will end up
+    # comparing two things that were never comparable and cannot tell why.
+    #
+    # THREE RUNS IS THE FLOOR, NOT THE GOAL. Three runs with identical
+    # hyperparameters and different seeds is the same experiment three times;
+    # it earns 2 of 5. Vary something you can defend, and be able to say what
+    # the variation did to the metrics.
+
+    print("TODO: Log run to MLflow App (see comments above)")
+
+
 # ── Model Saving & Registry ────────────────────────────────────────────────────
 
 def save_and_register_model(model: xgb.Booster,
@@ -657,7 +767,12 @@ def main():
     # 6. Save and register
     save_and_register_model(model, metrics, args)
 
-    # 7. Write metrics to output (SageMaker picks these up for Experiments)
+    # 7. Track this run in your MLflow App (Task 1, 5 pts)
+    track_run(args, metrics, getattr(args, "resolved_scale_pos_weight", None))
+
+    # 8. Write metrics to output. SageMaker also collects these as job output;
+    #    that is job lineage, NOT experiment tracking. It records that a job
+    #    ran, not what you varied or why. Step 7 is the graded one.
     metrics_path = os.path.join(args.output_data_dir, "evaluation_metrics.json")
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
