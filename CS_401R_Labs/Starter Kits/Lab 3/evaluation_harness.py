@@ -22,7 +22,18 @@ Usage:
         --agent-alias-id <alias-id>
 
 Requirements:
-    pip install ragas langchain boto3 pandas
+    pip install ragas datasets "langchain-community<0.4" boto3 pandas
+
+    The langchain-community pin is REQUIRED, not belt-and-braces. That package
+    is being sunset and has dropped `chat_models.vertexai`, which ragas imports
+    at module load. Without the pin, `pip install ragas` succeeds and then:
+
+        ModuleNotFoundError: No module named
+        'langchain_community.chat_models.vertexai'
+
+    ragas declares langchain-community with no upper bound, so pip resolves to
+    the sunset version. Verified 2026-08-08: ragas 0.4.3 + langchain-community
+    0.3.31 imports cleanly; 0.4.2 does not.
 """
 
 import argparse
@@ -44,7 +55,7 @@ try:
     RAGAS_AVAILABLE = True
 except ImportError:
     RAGAS_AVAILABLE = False
-    print("WARNING: ragas not installed. Install with: pip install ragas datasets")
+    print('WARNING: ragas not installed. Install with: pip install ragas datasets "langchain-community<0.4"')
 
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
@@ -328,7 +339,7 @@ class RAGEvaluator:
 
     def run(self, test_cases: list[RAGTestCase]) -> pd.DataFrame:
         if not RAGAS_AVAILABLE:
-            raise ImportError("Install ragas: pip install ragas datasets")
+            raise ImportError('Install ragas: pip install ragas datasets "langchain-community<0.4"')
 
         print(f"\n── Running RAG Evaluation ({len(test_cases)} test cases) ──")
 
@@ -616,7 +627,7 @@ def main():
 
     if args.track == "B":
         if not RAGAS_AVAILABLE:
-            print("ERROR: ragas not installed. Run: pip install ragas datasets langchain")
+            print('ERROR: ragas not installed. Run: pip install ragas datasets "langchain-community<0.4"')
             return
 
         print("Track B: Offer Generation RAG Evaluation")

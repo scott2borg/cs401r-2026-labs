@@ -1564,6 +1564,16 @@ Also include: confusion matrix at your chosen threshold, feature importance plot
 
 Generate personalised retention offers for customers your Task 1 model flags as high-risk.
 
+> **Installing RAGAS needs a pin, or it installs successfully and then won't import.**
+>
+> ```bash
+> pip install ragas datasets "langchain-community<0.4"
+> ```
+>
+> Without `"langchain-community<0.4"` you get a clean install followed by `ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'` the moment the harness imports RAGAS. `langchain-community` is being sunset and dropped that module; RAGAS imports it at load and declares no upper bound, so pip happily resolves to the broken version. Verified 2026-08-08: ragas 0.4.3 works with langchain-community 0.3.31 and fails with 0.4.2.
+>
+> **A successful `pip install` is not evidence the package works.** Import it before you believe it — that is the whole lesson here, and it costs two seconds.
+
 > **Set `temperature` OR `topP` — never both.** Every Claude 4+ model rejects the pair:
 >
 > ```
