@@ -248,12 +248,38 @@ Build a ReAct agent handling NorthStar customer inquiries.
 - `query_policy(question)` — retrieval over the policy corpus
 - Optional: `initiate_return(order_id)`, `apply_loyalty_credit(customer_id, amount)`
 
+> ## ⚠ Amazon Bedrock **Agents** is closed to your account. Do not plan around it.
+>
+> `CreateAgent` returns:
+>
+> ```
+> AccessDeniedException: Bedrock Agents is in Maintenance Mode. New agent
+> creation is not available for accounts without prior service usage.
+> ```
+>
+> AWS closed agent creation to accounts that were not already using the service. **Every account in this course is new, so every one of you is refused.** It is not a quota, not a permission, and no IAM change fixes it. Verified 2026-08-07.
+>
+> **Build the ReAct loop yourself against `bedrock-runtime`** — the Converse/InvokeModel API is unaffected and meets every requirement below. That is a client-side loop you write: send the tool schemas, read the `tool_use` block, execute the tool, send the result back, repeat until the model stops asking. LangGraph is also fine.
+>
+> **This is the third time this course you will hit "documented AWS feature, closed to new accounts"** — after SageMaker Model Monitor schedules (Lab 6) and legacy Bedrock model IDs (below). Notice the pattern. The engineering lesson is that a capability existing in the documentation is not the same as a capability available to you, and the only reliable way to find out is to call the API.
+
 **Requirements:**
 
-- Agent built with Bedrock Agents, LangGraph, or equivalent
+- Agent built as a **client-side ReAct loop over `bedrock-runtime`**, LangGraph, or equivalent — *not* managed Bedrock Agents (see the warning above)
 - Every tool call logged: inputs, outputs, latency
 - Per-run token cost tracked
 - An explicit escalation path to a human
+
+> **Use a cross-region inference profile for the model ID.** Claude 4.5+ models cannot be invoked on-demand by their bare model ID:
+>
+> ```
+> anthropic.claude-haiku-4-5-20251001-v1:0        ✗ ValidationException
+> us.anthropic.claude-haiku-4-5-20251001-v1:0     ✓ works
+> ```
+>
+> The error — *"Invocation of model ID … with on-demand throughput isn't supported. Retry your request with the ID or ARN of an inference profile"* — does at least tell you the fix, which makes it one of the friendlier failures in this course.
+>
+> **Do not reach for Claude 3 Haiku instead.** It is marked `LEGACY` and Bedrock refuses it on accounts without recent usage: *"Access denied. This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days."* Same closed-to-new-accounts pattern, different service.
 
 **Evaluation — five scenarios**, documented with traces:
 

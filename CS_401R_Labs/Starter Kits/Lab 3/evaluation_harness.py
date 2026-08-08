@@ -489,7 +489,14 @@ def main():
     parser.add_argument("--output-dir", default="./evaluation_results")
 
     # Track B args
-    parser.add_argument("--bedrock-model-id", default="anthropic.claude-haiku-20240307-v1:0")
+    # "us." prefix = cross-region inference profile, and it is REQUIRED: Claude
+    # 4.5+ cannot be invoked on-demand by bare model ID (ValidationException).
+    # The previous default here, "anthropic.claude-haiku-20240307-v1:0", was not
+    # a real model ID at all (the real Claude 3 Haiku has a "3-"), and Claude 3
+    # Haiku is now LEGACY and refused on accounts without recent usage.
+    # Verified against Bedrock 2026-08-07.
+    parser.add_argument("--bedrock-model-id",
+                        default="us.anthropic.claude-haiku-4-5-20251001-v1:0")
     parser.add_argument("--vector-store-endpoint", default=None)
 
     # Track C args
