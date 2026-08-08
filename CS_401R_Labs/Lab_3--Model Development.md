@@ -200,6 +200,17 @@ Also include: confusion matrix at your chosen threshold, feature importance plot
 
 Generate personalised retention offers for customers your Task 1 model flags as high-risk.
 
+> **Set `temperature` OR `topP` — never both.** Every Claude 4+ model rejects the pair:
+>
+> ```
+> ValidationException: `temperature` and `top_p` cannot both be specified
+> for this model. Please use only one.
+> ```
+>
+> Most RAG tutorials set both, because older models accepted it. Yours will not. The error is at least explicit about the fix — delete one. Verified 2026-08-07.
+>
+> **Both halves of Track B are verified working**, so a failure is yours to find, not the platform's: `amazon.titan-embed-text-v2:0` embedded 52 chunks to 1024 dimensions in about 10 seconds, and generation through the inference profile produced a grounded, tier-appropriate offer. The model-ID rules in the Track C warning below apply here identically.
+
 **Inputs:** customer profile — predicted churn probability, loyalty tier, `total_lifetime_value`, `category_diversity_score`, top categories.
 **Corpus:** `northstar-policy-docs/` from the starter kit — return policy, loyalty terms, shipping policy, and a customer FAQ.
 
