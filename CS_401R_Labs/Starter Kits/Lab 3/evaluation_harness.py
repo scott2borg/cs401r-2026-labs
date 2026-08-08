@@ -365,6 +365,37 @@ class RAGEvaluator:
         print()
 
 
+
+def detect_escalation(tool_calls: list, response_text: str) -> bool:
+    """Did the agent escalate to a human? ONE definition, used by both evaluators.
+
+    This was previously written twice and wrong both times:
+
+        "escalate" in tool_calls              # exact LIST MEMBERSHIP, not substring
+        "human_agent" in response.lower()     # prose never contains that literal
+
+    The escalation tool is named `escalate_to_human`, so `"escalate" in
+    tool_calls` compared the whole string "escalate" against each element and
+    was always False. The response check looked for an identifier, not language
+    a model would actually produce. Net effect: escalation was NEVER detected,
+    so every scenario with should_escalate=True failed no matter how correctly
+    the agent behaved -- including TC-005, the scenario the rubric cares most
+    about. Verified 2026-08-08.
+
+    Tool call is the strong signal; the phrase list is the fallback for agents
+    that escalate in prose without a dedicated tool.
+    """
+    if any("escalate" in str(t).lower() for t in tool_calls):
+        return True
+    text = (response_text or "").lower()
+    return any(kw in text for kw in (
+        "escalate", "escalating", "escalation",
+        "human agent", "human_agent", "human specialist",
+        "transfer you to", "connect you with a specialist",
+        "customer experience team",
+    ))
+
+
 # ── Track C: Agent Evaluation ──────────────────────────────────────────────────
 
 class AgentEvaluator:
@@ -426,7 +457,7 @@ class AgentEvaluator:
         # TODO: Check for escalation behavior
         # This requires inspecting the agent response for escalation language
         # or a specific "escalate" tool call
-        escalated = "escalate" in tool_calls or "human_agent" in result["response"].lower()
+        escalated = detect_escalation(tool_calls, result["response"])
         escalation_correct = (escalated == tc.should_escalate)
 
         passed = (
@@ -483,6 +514,81 @@ class AgentEvaluator:
 
 # ── CLI Entry Point ────────────────────────────────────────────────────────────
 
+
+class LocalAgentEvaluator(AgentEvaluator):
+    """Evaluate a ReAct agent you built yourself, over bedrock-runtime.
+
+    USE THIS ONE. Managed Amazon Bedrock Agents is closed to new AWS accounts:
+
+        AccessDeniedException: Bedrock Agents is in Maintenance Mode. New agent
+        creation is not available for accounts without prior service usage.
+
+    So you cannot obtain the --agent-id / --agent-alias-id that AgentEvaluator
+    above needs, and neither can anyone else on a new account. Verified against
+    Bedrock 2026-08-07. That class is retained only for students on older
+    accounts that still have access.
+
+    You supply one function. It takes the customer's message and returns the
+    agent's reply plus the tool names your agent called, in order:
+
+        def my_agent(message: str, session_id: str) -> tuple[str, list[str]]:
+            ...
+            return reply_text, ["lookup_order", "query_policy"]
+
+    If your agent uses the Converse API, the tool names are already sitting in
+    the conversation history -- Converse records each call as a `toolUse` block:
+
+        reply = agent.chat(message)
+        tools = [b["toolUse"]["name"]
+                 for msg in agent.conversation_history
+                 for b in (msg.get("content") or [])
+                 if isinstance(b, dict) and "toolUse" in b]
+        return reply, tools
+
+    Scoring is identical either way -- the required/forbidden tool-call and
+    escalation checks in evaluate_scenario() are inherited unchanged, so your
+    grade does not depend on which path you took.
+    """
+
+    def __init__(self, invoke_fn):
+        self.invoke_fn = invoke_fn   # deliberately no boto3 client here
+
+    def invoke_agent(self, message: str, session_id: str) -> dict:
+        reply, tool_calls = self.invoke_fn(message, session_id)
+        # Stash the names where extract_tool_calls() can find them, so the
+        # inherited evaluate_scenario() needs no changes.
+        return {"response": reply, "trace": [], "tool_calls": list(tool_calls)}
+
+    def extract_tool_calls(self, trace) -> list:
+        # Unused for this path; evaluate_scenario() reads invoke_agent()'s
+        # result directly via the override below.
+        return []
+
+    def evaluate_scenario(self, tc: "AgentTestCase") -> dict:
+        session_id = f"test-{tc.scenario_id}-{int(time.time())}"
+        result = self.invoke_agent(tc.user_message, session_id)
+        tool_calls = result["tool_calls"]
+
+        missing_required = [t for t in tc.expected_tool_calls if t not in tool_calls]
+        unexpected_forbidden = [t for t in tc.forbidden_tool_calls if t in tool_calls]
+        escalated = detect_escalation(tool_calls, result["response"])
+        escalation_correct = (escalated == tc.should_escalate)
+        passed = (not missing_required and not unexpected_forbidden
+                  and escalation_correct)
+
+        return {
+            "scenario_id": tc.scenario_id,
+            "scenario_type": tc.scenario_type,
+            "passed": passed,
+            "tool_calls": tool_calls,
+            "missing_required": missing_required,
+            "unexpected_forbidden": unexpected_forbidden,
+            "escalated": escalated,
+            "escalation_expected": tc.should_escalate,
+            "response": result["response"],
+        }
+
+
 def main():
     parser = argparse.ArgumentParser(description="NorthStar LLM Evaluation Harness")
     parser.add_argument("--track", choices=["B", "C"], required=True)
@@ -534,18 +640,33 @@ def main():
         print(f"Results saved to {output_path}")
 
     elif args.track == "C":
-        if not args.agent_id or not args.agent_alias_id:
-            print("ERROR: --agent-id and --agent-alias-id are required for Track C")
-            return
-
         print("Track C: Customer Service Agent Evaluation")
         print("=" * 50)
 
-        evaluator = AgentEvaluator(
-            agent_id=args.agent_id,
-            agent_alias_id=args.agent_alias_id,
-            region=args.region,
-        )
+        if args.agent_id and args.agent_alias_id:
+            # Managed Bedrock Agents. Only reachable on an AWS account that was
+            # already using the service before it entered maintenance mode.
+            print("Mode: managed Bedrock Agents (agent_id supplied)")
+            evaluator = AgentEvaluator(
+                agent_id=args.agent_id,
+                agent_alias_id=args.agent_alias_id,
+                region=args.region,
+            )
+        else:
+            print("Mode: local ReAct agent over bedrock-runtime")
+
+            def placeholder_agent_fn(message: str, session_id: str):
+                raise NotImplementedError(
+                    "TODO: wire up your agent.\n\n"
+                    "Return (reply_text, [tool_names_called_in_order]).\n"
+                    "See LocalAgentEvaluator's docstring for the Converse-API\n"
+                    "extraction pattern -- it is about four lines.\n\n"
+                    "Managed Bedrock Agents is closed to new AWS accounts, so\n"
+                    "--agent-id is not an option for you. Build the ReAct loop\n"
+                    "yourself; Track C's rubric does not care which you used."
+                )
+
+            evaluator = LocalAgentEvaluator(invoke_fn=placeholder_agent_fn)
         results = evaluator.run(AGENT_TEST_CASES)
         output_path = os.path.join(args.output_dir, f"agent_eval_{timestamp}.csv")
         results.to_csv(output_path, index=False)

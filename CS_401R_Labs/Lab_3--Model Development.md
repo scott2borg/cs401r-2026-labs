@@ -292,6 +292,10 @@ Build a ReAct agent handling NorthStar customer inquiries.
 >
 > **Do not reach for Claude 3 Haiku instead.** It is marked `LEGACY` and Bedrock refuses it on accounts without recent usage: *"Access denied. This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days."* Same closed-to-new-accounts pattern, different service.
 
+> **Running the evaluation harness.** `evaluation_harness.py --track C` evaluates **your** agent — supply an `invoke_fn(message, session_id)` returning `(reply_text, [tool_names_called])`. If you used the Converse API, the tool names are already in your conversation history as `toolUse` blocks; extracting them is about four lines, and `LocalAgentEvaluator`'s docstring shows exactly how.
+>
+> The harness's `--agent-id` flag is for managed Bedrock Agents and is unusable on your account (see above). You do not need it.
+
 **Evaluation — five scenarios**, documented with traces:
 
 1. Standard order status inquiry (happy path)
