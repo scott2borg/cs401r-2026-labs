@@ -22,7 +22,7 @@ Usage:
         --agent-alias-id <alias-id>
 
 Requirements:
-    pip install ragas datasets "langchain-community<0.4" boto3 pandas
+    pip install ragas datasets "langchain-community<0.4" langchain-aws boto3 pandas
 
     The langchain-community pin is REQUIRED, not belt-and-braces. That package
     is being sunset and has dropped `chat_models.vertexai`, which ragas imports
@@ -55,7 +55,7 @@ try:
     RAGAS_AVAILABLE = True
 except ImportError:
     RAGAS_AVAILABLE = False
-    print('WARNING: ragas not installed. Install with: pip install ragas datasets "langchain-community<0.4"')
+    print('WARNING: ragas not installed. Install with: pip install ragas datasets "langchain-community<0.4" langchain-aws')
 
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
@@ -321,6 +321,52 @@ AGENT_TEST_CASES = [
 
 # ── Track B: RAG Evaluation ────────────────────────────────────────────────────
 
+
+# Cross-region inference profile ("us." prefix) -- required; Claude 4.5+
+# cannot be invoked on-demand by bare model ID.
+DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def build_bedrock_judge(model_id: str, region: str = "us-east-1"):
+    """Build the LLM + embeddings RAGAS uses to SCORE your answers.
+
+    RAGAS is LLM-as-judge: faithfulness, answer_relevancy and context_recall are
+    each computed by a model, not by string comparison. If you call
+    ragas.evaluate() without llm= and embeddings=, RAGAS falls back to its
+    default judge -- OpenAI -- and dies with:
+
+        OpenAIError: Missing credentials. Please pass an `api_key` ... or set
+        the OPENAI_API_KEY environment variable
+
+    You do not have an OpenAI key and this course does not issue one. That is
+    what this function exists to prevent: it points the judge at Bedrock, which
+    you do have. Verified 2026-08-08 -- scored a sample on Bedrock and returned
+    faithfulness 0.5000 / answer_relevancy 0.6829 / context_recall 1.0000.
+
+    Note the judge is a SECOND model, billed separately from the model your RAG
+    pipeline uses to generate offers. Four test cases times three metrics is a
+    few cents on Haiku, not zero.
+    """
+    try:
+        from langchain_aws import ChatBedrock, BedrockEmbeddings
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+    except ImportError as e:
+        raise ImportError(
+            "Bedrock judge needs langchain-aws:\n"
+            '    pip install ragas datasets "langchain-community<0.4" langchain-aws'
+        ) from e
+
+    llm = LangchainLLMWrapper(ChatBedrock(
+        model_id=model_id, region_name=region,
+        model_kwargs={"temperature": 0},   # judging should be deterministic
+    ))
+    embeddings = LangchainEmbeddingsWrapper(BedrockEmbeddings(
+        model_id="amazon.titan-embed-text-v2:0", region_name=region,
+    ))
+    return llm, embeddings
+
+
 class RAGEvaluator:
 
     RAGAS_TARGETS = {
@@ -329,17 +375,23 @@ class RAGEvaluator:
         "context_recall": 0.70,
     }
 
-    def __init__(self, rag_invoke_fn):
+    def __init__(self, rag_invoke_fn, bedrock_model_id=None, region="us-east-1"):
         """
         Args:
-            rag_invoke_fn: A callable that takes (customer_context, question) and returns
-                           {"answer": str, "contexts": list[str]}
+            rag_invoke_fn:     callable(customer_context, question) ->
+                               {"answer": str, "contexts": list[str]}
+            bedrock_model_id:  model RAGAS uses to JUDGE your answers. Defaults to
+                               the same Haiku inference profile the pipeline uses.
+                               Pass None only if you are supplying your own judge.
+            region:            AWS region for the judge and its embeddings.
         """
         self.rag_invoke_fn = rag_invoke_fn
+        self.bedrock_model_id = bedrock_model_id or DEFAULT_BEDROCK_MODEL_ID
+        self.region = region
 
     def run(self, test_cases: list[RAGTestCase]) -> pd.DataFrame:
         if not RAGAS_AVAILABLE:
-            raise ImportError('Install ragas: pip install ragas datasets "langchain-community<0.4"')
+            raise ImportError('Install ragas: pip install ragas datasets "langchain-community<0.4" langchain-aws')
 
         print(f"\n── Running RAG Evaluation ({len(test_cases)} test cases) ──")
 
@@ -357,9 +409,16 @@ class RAGEvaluator:
             dataset_dict["ground_truth"].append(tc.ground_truth)
 
         dataset = Dataset.from_dict(dataset_dict)
+        # llm= and embeddings= are REQUIRED. Omit them and RAGAS silently falls
+        # back to OpenAI and fails on missing credentials -- see
+        # build_bedrock_judge() for the full explanation.
+        judge_llm, judge_embeddings = build_bedrock_judge(
+            self.bedrock_model_id, self.region)
         scores = evaluate(
             dataset,
             metrics=[faithfulness, answer_relevancy, context_recall],
+            llm=judge_llm,
+            embeddings=judge_embeddings,
         )
 
         results_df = scores.to_pandas()
@@ -613,7 +672,7 @@ def main():
     # Haiku is now LEGACY and refused on accounts without recent usage.
     # Verified against Bedrock 2026-08-07.
     parser.add_argument("--bedrock-model-id",
-                        default="us.anthropic.claude-haiku-4-5-20251001-v1:0")
+                        default=DEFAULT_BEDROCK_MODEL_ID)
     parser.add_argument("--vector-store-endpoint", default=None)
 
     # Track C args
@@ -627,7 +686,7 @@ def main():
 
     if args.track == "B":
         if not RAGAS_AVAILABLE:
-            print('ERROR: ragas not installed. Run: pip install ragas datasets "langchain-community<0.4"')
+            print('ERROR: ragas not installed. Run: pip install ragas datasets "langchain-community<0.4" langchain-aws')
             return
 
         print("Track B: Offer Generation RAG Evaluation")
@@ -644,7 +703,9 @@ def main():
                 "and return {'answer': str, 'contexts': list[str]}"
             )
 
-        evaluator = RAGEvaluator(rag_invoke_fn=placeholder_rag_fn)
+        evaluator = RAGEvaluator(rag_invoke_fn=placeholder_rag_fn,
+                                 bedrock_model_id=args.bedrock_model_id,
+                                 region=args.region)
         results = evaluator.run(OFFER_TEST_CASES)
         output_path = os.path.join(args.output_dir, f"rag_eval_{timestamp}.csv")
         results.to_csv(output_path, index=False)

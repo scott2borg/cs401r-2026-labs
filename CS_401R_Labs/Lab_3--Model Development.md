@@ -200,10 +200,25 @@ Also include: confusion matrix at your chosen threshold, feature importance plot
 
 Generate personalised retention offers for customers your Task 1 model flags as high-risk.
 
+> **RAGAS scores your answers with an LLM judge — and it defaults to OpenAI.**
+>
+> Faithfulness, answer relevance and context recall are each computed *by a model*, not by string comparison. Call `ragas.evaluate()` without `llm=` and `embeddings=` and RAGAS reaches for its default judge:
+>
+> ```
+> OpenAIError: Missing credentials. Please pass an `api_key` ...
+> or set the OPENAI_API_KEY environment variable
+> ```
+>
+> **You do not have an OpenAI key and this course does not issue one.** The harness now points the judge at Bedrock for you (`build_bedrock_judge`), so this works out of the box — but if you write your own evaluation, you must pass `llm=` and `embeddings=` yourself.
+>
+> Two consequences worth internalising: **the judge is a second model, billed separately** from the one generating your offers, and **an LLM-judged metric is an estimate, not a measurement** — re-running can move a score. Report the numbers you got, not the numbers you wanted.
+>
+> Verified 2026-08-08 on Bedrock: a deliberately off-target pipeline scored faithfulness 1.000 (it *was* grounded in its context) but answer_relevancy 0.297 and context_recall 0.125, because it answered a question nobody asked. **High faithfulness with low relevance is the signature of a RAG system that retrieves well and answers the wrong question** — worth recognising in your own results.
+
 > **Installing RAGAS needs a pin, or it installs successfully and then won't import.**
 >
 > ```bash
-> pip install ragas datasets "langchain-community<0.4"
+> pip install ragas datasets "langchain-community<0.4" langchain-aws
 > ```
 >
 > Without `"langchain-community<0.4"` you get a clean install followed by `ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'` the moment the harness imports RAGAS. `langchain-community` is being sunset and dropped that module; RAGAS imports it at load and declares no upper bound, so pip happily resolves to the broken version. Verified 2026-08-08: ragas 0.4.3 works with langchain-community 0.3.31 and fails with 0.4.2.
